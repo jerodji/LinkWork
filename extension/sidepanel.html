@@ -1,0 +1,86 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>LinkWork 文案提取</title>
+  <link rel="stylesheet" href="sidepanel.css" />
+</head>
+<body>
+  <header class="header">
+    <div class="brand">
+      <span class="logo">LW</span>
+      <div class="brand-text">
+        <h1>LinkWork</h1>
+        <span class="subtitle">链接文案提取</span>
+      </div>
+    </div>
+    <div class="status" id="serviceStatus" title="本地服务状态">
+      <span class="dot" id="statusDot"></span>
+      <span id="statusText">检查服务…</span>
+    </div>
+  </header>
+
+  <section class="block">
+    <label class="label" for="urlInput">分享链接</label>
+    <textarea id="urlInput" class="input" rows="2"
+      placeholder="粘贴视频 / 图文 / 网页链接，例如：
+https://v.douyin.com/xxxx/
+https://www.xiaohongshu.com/explore/xxxx
+https://mp.weixin.qq.com/s/xxxx"></textarea>
+    <div class="row">
+      <button id="extractBtn" class="btn primary">提取文案</button>
+      <button id="clearBtn" class="btn ghost">清空</button>
+    </div>
+    <div class="progress" id="progressWrap" aria-hidden="true">
+      <div class="progress-bar" id="progressBar"></div>
+    </div>
+    <p class="hint" id="modeHint"></p>
+  </section>
+
+  <section class="block grow">
+    <div class="result-head">
+      <label class="label">提取结果</label>
+      <div class="result-meta" id="resultMeta"></div>
+    </div>
+    <div class="result-wrap">
+      <textarea id="resultBox" class="output" readonly
+        placeholder="提取到的文案会显示在这里"></textarea>
+    </div>
+    <div class="row">
+      <button id="copyBtn" class="btn primary">复制文案</button>
+      <button id="copyRawBtn" class="btn" title="复制未整理的原始文本">复制原文</button>
+      <button id="clearResultBtn" class="btn ghost">清空结果</button>
+    </div>
+  </section>
+
+  <section class="block cache-block">
+    <div class="cache-row">
+      <span class="label" style="margin:0">媒体缓存</span>
+      <span id="cacheSize" class="cache-size">—</span>
+    </div>
+    <div class="row" style="margin-top:6px">
+      <button id="clearCacheBtn" class="btn">清除缓存</button>
+      <label class="check-inline" title="每次提取成功后自动清理该次下载的媒体">
+        <input type="checkbox" id="autoClear" />
+        <span>提取后自动清理</span>
+      </label>
+    </div>
+  </section>
+
+  <section class="block">
+    <details id="logDetails">
+      <summary>运行日志 <span id="logCount" class="badge">0</span></summary>
+      <div class="log-actions">
+        <button id="copyLogBtn" class="btn small">复制日志</button>
+        <button id="clearLogBtn" class="btn small ghost">清空日志</button>
+      </div>
+      <pre id="logBox" class="log"></pre>
+    </details>
+  </section>
+
+  <div id="toast" class="toast"></div>
+
+  <script src="sidepanel.js" type="module"></script>
+</body>
+</html>

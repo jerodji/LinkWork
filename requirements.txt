@@ -1,0 +1,18 @@
+# LinkWork 运行依赖（推荐用 uv/pip 安装本文件即可完成全部功能）
+yt-dlp>=2024.8.6
+requests>=2.32.0
+beautifulsoup4>=4.12.0
+lxml>=5.2.0
+imageio-ffmpeg>=0.5.1        # 自带静态 ffmpeg，无需 Homebrew
+
+# 语音识别（默认引擎，CPU 即可运行）
+faster-whisper>=1.0.3
+
+# 网页正文兜底解析
+readability-lxml>=0.8.1
+
+# macOS 原生能力（可选）：系统语音识别 + 图片文字识别
+pyobjc-framework-Speech>=10.1
+pyobjc-framework-AVFoundation>=10.1
+pyobjc-framework-Vision>=10.1
+pyobjc-framework-Quartz>=10.1

@@ -1,0 +1,37 @@
+[project]
+name = "linkwork"
+version = "0.2.14"
+description = "LinkWork - 链接文案提取器：从视频/口播/图文/文案链接中提取文案（含视频口播稿）"
+readme = "README.md"
+requires-python = ">=3.10,<3.14"
+license = "MIT"
+authors = [{ name = "LinkWork" }]
+dependencies = [
+  "yt-dlp>=2024.8.6",
+  "requests>=2.32.0",
+  "beautifulsoup4>=4.12.0",
+  "lxml>=5.2.0",
+  "imageio-ffmpeg>=0.5.1",
+  "opencc-python-reimplemented>=0.1.7",
+]
+
+[project.optional-dependencies]
+# 语音识别（默认引擎，CPU 可用，首次运行自动下载模型）
+asr = ["faster-whisper>=1.0.3"]
+# 网页正文兜底解析
+article = ["readability-lxml>=0.8.1"]
+# Apple 原生语音识别（零模型下载，基于 pyobjc Speech 框架）
+apple = ["pyobjc-framework-Speech>=10.1", "pyobjc-framework-AVFoundation>=10.1"]
+
+[project.scripts]
+linkwork = "linkwork.cli:main"
+
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+linkwork = ["assets/*"]
