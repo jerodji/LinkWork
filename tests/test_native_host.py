@@ -1,11 +1,12 @@
 """native messaging host 的单元测试。
 
-覆盖三件事：
+覆盖四件事：
   1. 协议：4 字节小端长度前缀 + JSON，读写都要对得上；
-  2. 动作白名单：只认 ping / start，别的一律拒绝（扩展被注入也拿不到 shell）；
+  2. 动作白名单：只认 ping / start / reveal，别的一律拒绝（扩展被注入也拿不到 shell）；
   3. 缓存兜底：默认缓存目录不可写时，必须换到可写目录并给出说明
      —— 真实踩过：服务被沙箱启动时，提取会报
         PermissionError: [Errno 1] Operation not permitted: .../Caches/LinkWork/media/...
+  4. 打开缓存位置（reveal）：命令固定为 open -R，且只指向缓存目录。
 """
 
 from __future__ import annotations
@@ -129,3 +130,60 @@ def test_env_override_is_restored(host, monkeypatch):
     with host.env_overrides(LINKWORK_CACHE_DIR="/tmp/whatever"):
         assert host.os.environ["LINKWORK_CACHE_DIR"] == "/tmp/whatever"
     assert "LINKWORK_CACHE_DIR" not in host.os.environ
+
+
+# --------------------------------------------------------- 打开缓存位置（reveal）
+
+
+def test_action_whitelist_now_includes_reveal(host):
+    result = host.handle({"action": "rm -rf /"})
+    assert result["ok"] is False
+    assert "reveal" in result["error"]  # 白名单说明里要列出允许的动作
+
+
+def test_reveal_opens_cache_dir_in_finder(host, tmp_path, monkeypatch):
+    """reveal 只调用固定的 open -R，且指向缓存目录（不接受任意命令）。"""
+    cache = tmp_path / "media"
+    calls = []
+
+    class FakeResult:
+        returncode = 0
+        stderr = ""
+
+    monkeypatch.setattr(host, "_cache_root", lambda: cache)
+    monkeypatch.setattr(host.subprocess, "run", lambda cmd, **kwargs: calls.append(cmd) or FakeResult())
+
+    result = host.reveal_cache_dir()
+
+    assert result["ok"] is True
+    assert result["path"] == str(cache)
+    assert calls == [["/usr/bin/open", "-R", str(cache)]], calls
+    assert cache.exists(), "目录不存在时应先创建再打开"
+
+
+def test_reveal_reports_finder_failure(host, tmp_path, monkeypatch):
+    cache = tmp_path / "media"
+    cache.mkdir()
+
+    class FakeResult:
+        returncode = 1
+        stderr = "boom"
+
+    monkeypatch.setattr(host, "_cache_root", lambda: cache)
+    monkeypatch.setattr(host.subprocess, "run", lambda *a, **k: FakeResult())
+
+    result = host.reveal_cache_dir()
+    assert result["ok"] is False
+    assert "boom" in result["error"]
+
+
+def test_reveal_rejects_uncreatable_path(host, tmp_path, monkeypatch):
+    """路径被同名文件占住时不能崩，要给出可读错误。"""
+    blocker = tmp_path / "media"
+    blocker.write_text("我是文件，不是目录", encoding="utf-8")
+    monkeypatch.setattr(host, "_cache_root", lambda: blocker / "sub")
+    monkeypatch.setattr(host.subprocess, "run", lambda *a, **k: None)
+
+    result = host.reveal_cache_dir()
+    assert result["ok"] is False
+    assert "缓存目录" in result["error"]

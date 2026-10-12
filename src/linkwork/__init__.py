@@ -7,6 +7,6 @@
 from .models import ExtractResult, Segment
 from .pipeline import ExtractOptions, extract
 
-__version__ = "0.2.21"
+__version__ = "0.2.24"
 
 __all__ = ["ExtractResult", "Segment", "ExtractOptions", "extract", "__version__"]

@@ -103,16 +103,16 @@ function describeHealth(result) {
     return { status: HEALTH_CHECKING, text: '检查服务…', title: '正在检查本地服务' };
   }
   const asr = (result.asr || []).find((entry) => entry.available);
-  const name = result.serviceName || 'LinkWork 本地服务';
+  // 面板空间窄，状态只保留「已连接」；版本 / 引擎 / 检查时间放到悬停提示里
   const title = [
-    `已连接 ${SERVICE_URL}`,
+    `${result.serviceName || 'LinkWork 本地服务'}：已连接 ${SERVICE_URL}`,
     `版本 v${result.version || '?'}`,
     `语音识别：${asr ? asr.name : '不可用'}`,
     `最近检查：${result.checkedAt || ''}`,
   ].join('\n');
   return {
     status: HEALTH_OK,
-    text: `已连接：${name}${asr ? ` · ${asr.name}` : ''}`,
+    text: '已连接',
     title,
   };
 }
@@ -274,8 +274,39 @@ function sendNativeMessageWithTimeout(message, timeoutMs) {
   ]);
 }
 
+/**
+ * 在访达里打开缓存目录（面板上的「打开缓存位置」按钮）。
+ *
+ * 扩展无权执行系统命令，只能请本机启动器代劳；host 只认「缓存目录」这一个位置。
+ */
+async function revealCacheDirViaHost() {
+  try {
+    const response = await sendNativeMessageWithTimeout({ action: 'reveal' }, 20000);
+    if (!response) throw new Error('本机程序没有返回结果');
+    if (!response.ok) throw new Error(response.error || '打开缓存位置失败');
+    console.log('[LinkWork] 已打开缓存位置：', response.path);
+    return response;
+  } catch (err) {
+    const message = describeError(err);
+    const hint = /not found|找不到/.test(message)
+      ? '（还没安装本机启动器：在项目目录运行 .venv/bin/python scripts/install_native_host.py，然后重启浏览器）'
+      : '';
+    throw new Error(`打开缓存位置失败：${message}${hint}`);
+  }
+}
+
 /** 请 native host 启动服务（供面板按钮使用；没有活动连接时也能用） */
 async function startServiceForAnyLink() {
+  // 先确认服务是不是已经在跑：在跑就直接回报，不惊动本机启动器、不做任何多余操作
+  const alive = await Promise.race([
+    serviceRequest('/api/health', 'GET', null, 3000).then(() => true).catch(() => false),
+    new Promise((resolve) => setTimeout(() => resolve(false), 3500)),
+  ]);
+  if (alive) {
+    console.log('[LinkWork] 服务已在运行，跳过启动');
+    return { ok: true, alreadyRunning: true, started: false };
+  }
+
   const link = panelLinks.values().next().value;
   if (link) {
     const result = await startServiceViaHost(link);
@@ -368,6 +399,8 @@ async function handleMessage(message) {
       return serviceRequest(`/api/jobs/${message.jobId}`, 'GET', null, 10000);
     case 'service:cache':
       return serviceRequest('/api/cache', 'GET', null, 8000);
+    case 'service:cacheReveal':
+      return revealCacheDirViaHost();
     case 'service:cacheClear':
       return serviceRequest('/api/cache/clear', 'POST', {});
     case 'service:ocr':

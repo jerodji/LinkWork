@@ -12,7 +12,7 @@
 
 function pageExtractor() {
   //: 取数逻辑版本标记（排查「改了没生效」时看日志里这个数字）
-  const EXTRACTOR_BUILD = 32;
+  const EXTRACTOR_BUILD = 35;
   const MAX_TEXT = 200000;
 
   function textOf(el) {

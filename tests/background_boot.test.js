@@ -322,6 +322,9 @@ console.log('\n[6] 本地服务响应契约（同步接口需解开 result 外�
   await testSidepanelCallHasTimeout();
   await testPanelAutoConnectLifecycle();
   await testServiceAutoStart();
+  testPanelLayout();
+  testCacheControls();
+  await testStartServiceWhenAlreadyRunning();
 }
 
 // --------------------------------------------------------------------------- //
@@ -351,9 +354,15 @@ async function testPanelAutoConnectLifecycle() {
     JSON.stringify(port.posted),
   );
   check(
-    '推送内容带上服务版本与 ASR 名称',
-    port.posted.some((m) => m.status === 'ok' && String(m.text).includes('faster-whisper') && String(m.title).includes('v9.9.9')),
+    '状态行只显示「已连接」（版本与 ASR 挪到悬停提示）',
+    port.posted.some((m) => m.status === 'ok' && m.text === '已连接'
+      && String(m.title).includes('faster-whisper') && String(m.title).includes('v9.9.9')),
     JSON.stringify(port.posted),
+  );
+  check(
+    '状态行不再拼服务名/引擎（面板窄，容易折行）',
+    port.posted.every((m) => m.status !== 'ok' || !/linkwork ·|whisper/.test(String(m.text))),
+    JSON.stringify(port.posted.map((m) => m.text)),
   );
   check('起了心跳定时器（间隔即为探活间隔）',
     timers.intervals.length === 1 && timers.intervals[0].ms === env.context.__linkworkPanelBridge.PANEL_HEARTBEAT_MS,
@@ -427,6 +436,156 @@ async function testPanelAutoConnectLifecycle() {
     '提取中不被连接状态覆盖阶段提示',
     /if \(!busy\) \{[\s\S]{0,200}?setStatus\('ok'/.test(sidepanel),
     'applyServiceState 未在 busy 时让步于阶段提示',
+  );
+}
+
+// --------------------------------------------------------------------------- //
+// 面板布局：可滚动、紧凑高度
+// --------------------------------------------------------------------------- //
+function testPanelLayout() {
+  console.log('\n[10] 面板布局（可滚动 + 紧凑高度）');
+
+  const html = fs.readFileSync(path.join(ROOT, 'extension', 'sidepanel.html'), 'utf8');
+  const css = fs.readFileSync(path.join(ROOT, 'extension', 'sidepanel.css'), 'utf8');
+
+  // 整体滚动容器：窗口矮时能上下滑到全部内容
+  check('存在滚动容器', /class="scroll"/.test(html), '缺少 .scroll 容器');
+  check('所有区块都在滚动容器内', !/<section[\s\S]*<\/section>\s*<div id="toast"/.test(html));
+  check('滚动容器可纵向滚动', /\.scroll\s*\{[\s\S]{0,260}?overflow-y:\s*auto/.test(css));
+  check('滚动容器不撑破父级', /\.scroll\s*\{[\s\S]{0,260}?min-height:\s*0/.test(css));
+  check('标题栏不参与滚动（固定在顶部）', /\.header\s*\{[\s\S]{0,200}?flex:\s*none/.test(css));
+  check('body 自身不滚动（交给 .scroll）', /body\s*\{[\s\S]{0,400}?overflow:\s*hidden/.test(css));
+
+  // 结果区不再自适应拉伸（否则区块高度不可控）
+  check('结果区不再用 grow 拉伸', !/block grow/.test(html) && !/\.block\.grow/.test(css));
+
+  // 按钮：高度 = 文字高度 + 10px
+  check(
+    '按钮高度为 1em + 10px',
+    /\.btn\s*\{[\s\S]{0,300}?height:\s*calc\(1em \+ 10px\)/.test(css),
+    '未找到 .btn 的高度规则',
+  );
+  check('按钮不再靠上下 padding 撑高', /\.btn\s*\{[\s\S]{0,300}?padding:\s*0 12px/.test(css));
+
+  // 输入框：正好 2 行
+  check('输入框声明 rows=2', /id="urlInput"[^>]*rows="2"/.test(html));
+  check('输入框不再有 60px 最小高度', !/\.input\s*\{[^}]*min-height:\s*60px/.test(css));
+  check('输入框高度按内容（2 行）', /\.input\s*\{[^}]*height:\s*auto/.test(css));
+
+  // 输出框：比原先矮 2 行，且自身可滚动
+  // 注意 .output 同时出现在「.input, .output { ... }」和多条单独规则里，所以要合并所有相关规则；
+  // 解析前先去掉注释，否则选择器里会混进 /* ... */ 文本
+  const cssNoComments = css.replace(/\/\*[\s\S]*?\*\//g, '');
+  const outputRules = [...cssNoComments.matchAll(/([^{}]+)\{([^}]*)\}/g)]
+    .filter(([, selectors]) => selectors.split(',').some((s) => s.trim().startsWith('.output')))
+    .map(([, , body]) => body)
+    .join('\n');
+  const height = Number(/height:\s*(\d+)px/.exec(outputRules)?.[1] || 0);
+  check('输出框高度已下调（< 120px 且 ≥ 60px）', height >= 60 && height < 120, `当前 ${height}px`);
+  check('输出框内容超出时在框内滚动', /overflow:\s*auto/.test(outputRules));
+
+  // 状态文案：只剩连接状态
+  check(
+    '状态行只显示「已连接」',
+    /text:\s*'已连接'/.test(fs.readFileSync(path.join(ROOT, 'extension', 'background.js'), 'utf8')),
+  );
+}
+
+// --------------------------------------------------------------------------- //
+// 媒体缓存：打开缓存位置 + 自动清理默认关
+// --------------------------------------------------------------------------- //
+function testCacheControls() {
+  console.log('\n[11] 媒体缓存控件');
+
+  const html = fs.readFileSync(path.join(ROOT, 'extension', 'sidepanel.html'), 'utf8');
+  const sidepanel = fs.readFileSync(path.join(ROOT, 'extension', 'sidepanel.js'), 'utf8');
+  const background = fs.readFileSync(BACKGROUND, 'utf8');
+
+  check('缓存区有「打开缓存位置」按钮', /id="openCacheBtn"/.test(html), 'sidepanel.html 缺少 #openCacheBtn');
+  check(
+    '按钮文案与缓存语义一致',
+    /打开缓存位置/.test(html) && /在访达里打开缓存目录/.test(html),
+  );
+  check('按钮已绑定点击处理', /openCacheBtn\.addEventListener\('click'/.test(sidepanel));
+  check('点击后走后台转交本机启动器', /call\('service:cacheReveal'/.test(sidepanel));
+  check('后台有对应的消息分支', /case 'service:cacheReveal'/.test(background));
+  check(
+    '后台通过 native host 的 reveal 动作实现（扩展不能自己执行系统命令）',
+    /sendNativeMessageWithTimeout\(\{\s*action:\s*'reveal'\s*\}/.test(background),
+    '未找到 reveal 动作调用',
+  );
+
+  // 自动清理默认不勾选
+  check(
+    '「提取后自动清理」默认不勾选',
+    /els\.autoClear\.checked = localStorage\.getItem\(AUTO_CLEAR_KEY\) === '1'/.test(sidepanel),
+    '默认值仍是勾选',
+  );
+  check(
+    '勾选框在 HTML 里没有默认 checked',
+    !/id="autoClear"[^>]*checked/.test(html),
+  );
+  check('用户勾选后仍会被记住', /setItem\(AUTO_CLEAR_KEY/.test(sidepanel));
+}
+
+// --------------------------------------------------------------------------- //
+// 「启动服务」：已在运行时不重复启动
+// --------------------------------------------------------------------------- //
+async function testStartServiceWhenAlreadyRunning() {
+  console.log('\n[12] 服务已在运行时点「启动服务」不做多余操作');
+
+  const background = fs.readFileSync(BACKGROUND, 'utf8');
+  const sidepanel = fs.readFileSync(path.join(ROOT, 'extension', 'sidepanel.js'), 'utf8');
+
+  // 后台：service:start 先探活，已在跑就直接返回
+  const env = boot();
+  const nativeCalls = [];
+  env.context.chrome.runtime.sendNativeMessage = async (...args) => {
+    nativeCalls.push(args);
+    return { ok: true, started: true, pid: 1 };
+  };
+  env.context.fetch = async () => ({
+    ok: true,
+    status: 200,
+    text: async () => JSON.stringify({ ok: true, name: 'linkwork', version: '1.0.0', asr: [] }),
+  });
+  const listener = env.listeners.message[0];
+  const send = (msg) => new Promise((resolve) => { listener(msg, {}, resolve); });
+  const result = await send({ type: 'service:start' });
+
+  check('后台返回「已在运行」', result?.data?.alreadyRunning === true, JSON.stringify(result));
+  check('后台没有启动本机程序', nativeCalls.length === 0, `调用 ${nativeCalls.length} 次 native host`);
+  check('后台没有真的去 started', result?.data?.started === false, JSON.stringify(result));
+
+  // 服务没跑时仍然照常拉起（别把功能改坏）
+  const env2 = boot();
+  const nativeCalls2 = [];
+  env2.context.chrome.runtime.sendNativeMessage = async (...args) => {
+    nativeCalls2.push(args);
+    return { ok: true, started: true, pid: 4242 };
+  };
+  env2.context.fetch = async () => { throw new TypeError('Failed to fetch'); };
+  const listener2 = env2.listeners.message[0];
+  const send2 = (msg) => new Promise((resolve) => { listener2(msg, {}, resolve); });
+  const result2 = await send2({ type: 'service:start' });
+  check('服务没跑时仍然拉起', nativeCalls2.length === 1 && result2?.data?.started === true, JSON.stringify(result2));
+
+  // 面板：点击前先自检，已在运行则只提示
+  check(
+    '面板点击后先查健康状态',
+    /async function startServiceManually[\s\S]{0,700}?call\('service:health'/.test(sidepanel),
+    'startServiceManually 没有先查服务状态',
+  );
+  check('已在运行时提示「服务已经在运行」', /服务已经在运行/.test(sidepanel));
+  check(
+    '已在运行时早返回，不再调 service:start',
+    /toast\('服务已经在运行'\);\s*\n\s*await refreshCache\(\);\s*\n\s*return;/.test(sidepanel),
+    '未在已在运行的分支提前返回',
+  );
+  check(
+    '提示为成功样式（绿色）',
+    /\.hint\.ok\s*\{\s*color:\s*var\(--ok\)/.test(fs.readFileSync(path.join(ROOT, 'extension', 'sidepanel.css'), 'utf8')),
+    '缺少 .hint.ok 样式',
   );
 }
 

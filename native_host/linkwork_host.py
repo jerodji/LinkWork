@@ -188,6 +188,35 @@ def pick_cache_dir() -> tuple[Path, str]:
     return default, f"{reason}，且找不到可替代目录"
 
 
+# ---------------------------------------------------------------- 打开缓存位置
+def reveal_cache_dir(path: str = "") -> dict[str, Any]:
+    """在访达（Finder）里打开缓存目录 —— 面板上的「打开缓存位置」按钮。
+
+    浏览器扩展没有权限执行系统命令，所以这个动作也由本机启动器代劳：
+    只允许打开「缓存目录」这一个位置（不接受任意路径），命令固定为 macOS 的 open。
+    """
+    target = Path(path).expanduser() if path.strip() else _cache_root()
+    if not target.exists():
+        try:
+            target.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            return {"ok": False, "error": f"缓存目录不存在且无法创建：{target}（{exc}）"}
+
+    log(f"打开缓存位置：{target}")
+    try:
+        # -R 在访达里选中该目录（不会像 open 那样直接进入目录，父级位置更清楚）
+        result = subprocess.run(  # noqa: S603 - 命令与路径都是固定/白名单
+            ["/usr/bin/open", "-R", str(target)],
+            check=False, capture_output=True, text=True, timeout=10,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        return {"ok": False, "error": f"调用访达失败：{exc}"}
+    if result.returncode != 0:
+        detail = (result.stderr or "").strip()[:200]
+        return {"ok": False, "error": f"访达返回错误（{result.returncode}）：{detail}"}
+    return {"ok": True, "path": str(target)}
+
+
 @contextmanager
 def env_overrides(**values: str) -> Iterator[None]:
     """临时给子进程加环境变量（不影响 host 自己）。"""
@@ -277,7 +306,11 @@ def handle(message: dict[str, Any]) -> dict[str, Any]:
     if action == "start":
         result = start_service(port)
         return {"ok": "error" not in result, "action": action, "port": port, **result}
-    return {"ok": False, "error": f"不支持的动作：{action!r}（只允许 ping / start）"}
+    if action == "reveal":
+        # 只允许打开缓存目录（path 仅用于测试时指向临时目录，界面不会传任意路径）
+        result = reveal_cache_dir(str(message.get("path") or ""))
+        return {"action": action, **result}
+    return {"ok": False, "error": f"不支持的动作：{action!r}（只允许 ping / start / reveal）"}
 
 
 def main() -> int:

@@ -34,6 +34,7 @@ const els = {
   clearLogBtn: $('clearLogBtn'),
   cacheSize: $('cacheSize'),
   clearCacheBtn: $('clearCacheBtn'),
+  openCacheBtn: $('openCacheBtn'),
   autoClear: $('autoClear'),
   autoStartService: $('autoStartService'),
   startServiceBtn: $('startServiceBtn'),
@@ -317,18 +318,50 @@ async function syncAutoStartPref(quiet = true) {
   return enabled;
 }
 
-/** 手动「启动服务」：请后台通过 native host 拉起，然后立刻重新探活 */
+/**
+ * 手动「启动服务」。
+ *
+ * 先自己查一次健康状态：**服务已经在跑就直接提示，不做任何多余操作**
+ * （之前是无条件去叫本机启动器，等于每次点击都白起一个进程）。
+ * 只有确实没连上时才请 native host 拉起。
+ */
 async function startServiceManually() {
   if (busy) return;
   els.startServiceBtn.disabled = true;
-  setHint('正在启动本地服务…');
-  setStatus('busy', '正在启动服务…');
-  log('请求启动本地服务（通过本机启动器）…');
+  setHint('正在检查服务状态…');
+  setStatus('busy', '检查服务…');
+  log('检查服务是否已在运行…');
+
   try {
+    // 已经在运行 → 只提示，不启动、不拉起本机启动器
+    let health = null;
+    try {
+      health = await call('service:health', {}, 5000);
+    } catch {
+      health = null;
+    }
+    if (health) {
+      const asr = (health.asr || []).find((e) => e.available);
+      setStatus('ok', '已连接');
+      linkState = 'ok';
+      setHint('服务已经在运行，无需重复启动。');
+      els.startHint.textContent = '服务已经在运行，无需重复启动。';
+      els.startHint.className = 'hint ok';
+      log(`服务已经在运行（v${health.version || '?'}，ASR：${asr ? asr.name : '无'}），无需重复启动`);
+      toast('服务已经在运行');
+      await refreshCache();
+      return;
+    }
+
+    setHint('正在启动本地服务…');
+    setStatus('busy', '正在启动服务…');
+    log('服务未运行，通过本机启动器启动…');
     const result = await call('service:start', {}, 90000);
     log(`启动结果：${JSON.stringify(result)}`);
     if (result?.alreadyRunning) {
-      log('服务本来就在运行（如果提取报 Operation not permitted，说明它是被受限环境启动的，需要先停掉它再启动）');
+      // 极少见：查询与启动之间服务自己起来了
+      log('服务在启动过程中已经运行');
+      toast('服务已经在运行');
     } else if (result?.pid) {
       log(`服务已启动（PID ${result.pid}${result.cacheDir ? `，缓存 ${result.cacheDir}` : ''}）`);
     }
@@ -455,8 +488,8 @@ async function waitJob(jobId, label) {
 async function ensureServiceReady() {
   try {
     const health = await call('service:health');
-    const asr = (health.asr || []).find((e) => e.available);
-    setStatus('ok', `已连接：${health.name || 'LinkWork 本地服务'}${asr ? ` · ${asr.name}` : ''}`);
+    // 状态只显示「已连接」，版本与识别引擎留给日志/悬停提示
+    setStatus('ok', '已连接');
     linkState = 'ok';
     return health;
   } catch (err) {
@@ -743,7 +776,22 @@ async function clearCache(quiet = false) {
   }
 }
 
-/** 提取成功后按需自动清理本次下载的媒体 */
+/** 在访达里打开缓存目录（扩展无权执行命令，转交本机启动器） */
+async function openCacheLocation() {
+  els.openCacheBtn.disabled = true;
+  try {
+    const result = await call('service:cacheReveal', {}, 25000);
+    log(`已在访达中打开缓存位置：${result?.path || '(未知路径)'}`);
+    toast('已在访达中打开缓存位置');
+  } catch (err) {
+    log(`打开缓存位置失败：${err.message}`);
+    toast(err.message, true);
+  } finally {
+    els.openCacheBtn.disabled = false;
+  }
+}
+
+/** 提取成功后按需自动清理本次下载的媒体（默认关闭） */
 async function autoClearIfNeeded() {
   if (!els.autoClear.checked) return;
   await clearCache(true);
@@ -794,6 +842,9 @@ els.clearLogBtn.addEventListener('click', () => {
 
 els.clearCacheBtn.addEventListener('click', () => {
   clearCache().catch((e) => toast(e.message, true));
+});
+els.openCacheBtn.addEventListener('click', () => {
+  openCacheLocation().catch((e) => toast(e.message, true));
 });
 els.autoClear.addEventListener('change', () => {
   localStorage.setItem(AUTO_CLEAR_KEY, els.autoClear.checked ? '1' : '0');
@@ -849,8 +900,8 @@ els.urlInput.addEventListener('keydown', (event) => {
 (async () => {
   setHint('把视频 / 图文 / 网页链接粘贴到上方，点击「提取文案」。');
   log('侧边栏已打开，正在连接本地服务…');
-  // 恢复偏好（默认开启，避免悄悄占空间）
-  els.autoClear.checked = localStorage.getItem(AUTO_CLEAR_KEY) !== '0';
+  // 恢复偏好：默认不勾选（任务正常结束服务端已自动清理，这一项用于异常中断后补清）
+  els.autoClear.checked = localStorage.getItem(AUTO_CLEAR_KEY) === '1';
   // 先把「自动启动」开关同步给后台，再建连：连不上时后台会顺手把服务拉起来
   await syncAutoStartPref();
   // 连接本身由后台负责探活；连上后会自动把状态推到界面

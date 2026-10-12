@@ -23,19 +23,38 @@ html, body {
 body {
   display: flex;
   flex-direction: column;
-  gap: 10px;
-  padding: 12px;
+  gap: 8px;
+  padding: 10px 12px;
   background: var(--bg);
   color: var(--text);
   font: 13px/1.5 -apple-system, BlinkMacSystemFont, "PingFang SC", "Helvetica Neue", Arial, sans-serif;
-  overflow: hidden;
+  height: 100%;
+  overflow: hidden;   /* 滚动交给下面的 .scroll，标题栏始终留在顶部 */
 }
+
+/* 整块面板可上下滚动：浏览器窗口矮时也能看到全部内容 */
+.scroll {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  /* 给滚动条留出空间，避免内容被压到 */
+  padding-right: 2px;
+  scrollbar-width: thin;
+}
+.scroll::-webkit-scrollbar { width: 8px; }
+.scroll::-webkit-scrollbar-thumb { background: #c9ced6; border-radius: 4px; }
+.scroll::-webkit-scrollbar-track { background: transparent; }
 
 .header {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 8px;
+  flex: none;
 }
 
 .brand { display: flex; align-items: center; gap: 8px; }
@@ -102,13 +121,7 @@ body {
   border: 1px solid var(--border);
   border-radius: var(--radius);
   padding: 10px;
-}
-
-.block.grow {
-  display: flex;
-  flex-direction: column;
-  flex: 1 1 auto;
-  min-height: 180px;
+  flex: none;          /* 面板可滚动，各区块按内容高度排列，不再拉伸 */
 }
 
 .label {
@@ -132,20 +145,22 @@ body {
   outline: none;
 }
 .input:focus, .output:focus { border-color: var(--primary); background: #fff; }
-.input { min-height: 60px; }
 
+/* 输入框：正好 2 行文字的高度，更多内容在框内滚动（rows="2"） */
+.input { height: auto; min-height: 0; line-height: 1.5; }
+
+/* 输出框：比原先矮 2 行；内容超出在框内滚动 */
 .output {
-  flex: 1 1 auto;
-  min-height: 120px;
-  height: 100%;
+  height: 86px;
+  min-height: 86px;
   background: #fff;
   white-space: pre-wrap;
   overflow: auto;
   font-size: 13px;
-  line-height: 1.6;
+  line-height: 1.5;
 }
 
-.result-wrap { display: flex; flex: 1 1 auto; min-height: 0; }
+.result-wrap { display: flex; min-height: 0; }
 
 .result-head {
   display: flex;
@@ -159,13 +174,16 @@ body {
 .row { display: flex; gap: 8px; margin-top: 8px; flex-wrap: wrap; }
 .row.between { justify-content: space-between; align-items: center; margin-top: 0; }
 
+/* 按钮：高度 = 文字高度 + 10px（不留多余内边距） */
 .btn {
   border: 1px solid var(--border);
   background: #fff;
   color: var(--text);
   border-radius: 6px;
-  padding: 7px 12px;
+  height: calc(1em + 10px);
+  padding: 0 12px;
   font-size: 12.5px;
+  line-height: 1;
   font-family: inherit;
   cursor: pointer;
   transition: background 0.15s, border-color 0.15s, opacity 0.15s;
@@ -255,7 +273,7 @@ details summary {
 }
 .check-inline input { margin: 0; cursor: pointer; }
 
-.btn.small { padding: 4px 9px; font-size: 11.5px; }
+.btn.small { height: calc(1em + 8px); padding: 0 9px; font-size: 11.5px; }
 
 /* 进度条：位于操作按钮下方，按提取阶段推进 */
 .progress {
