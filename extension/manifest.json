@@ -1,14 +1,15 @@
 {
   "manifest_version": 3,
   "name": "LinkWork 文案提取",
-  "version": "0.2.14",
+  "version": "0.2.21",
   "description": "在浏览器右侧边栏输入链接，提取视频口播稿、图文文案，一键复制。需要本地 LinkWork 服务。",
   "minimum_chrome_version": "114",
   "permissions": [
     "sidePanel",
     "scripting",
     "tabs",
-    "cookies"
+    "cookies",
+    "nativeMessaging"
   ],
   "host_permissions": [
     "http://127.0.0.1/*",

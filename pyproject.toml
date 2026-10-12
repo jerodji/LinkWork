@@ -1,6 +1,6 @@
 [project]
 name = "linkwork"
-version = "0.2.14"
+version = "0.2.21"
 description = "LinkWork - 链接文案提取器：从视频/口播/图文/文案链接中提取文案（含视频口播稿）"
 readme = "README.md"
 requires-python = ">=3.10,<3.14"

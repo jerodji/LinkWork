@@ -23,6 +23,7 @@ const els = {
   clearResultBtn: $('clearResultBtn'),
   statusDot: $('statusDot'),
   statusText: $('statusText'),
+  connState: $('connState'),
   modeHint: $('modeHint'),
   progressWrap: $('progressWrap'),
   progressBar: $('progressBar'),
@@ -34,11 +35,19 @@ const els = {
   cacheSize: $('cacheSize'),
   clearCacheBtn: $('clearCacheBtn'),
   autoClear: $('autoClear'),
+  autoStartService: $('autoStartService'),
+  startServiceBtn: $('startServiceBtn'),
+  installHostBtn: $('installHostBtn'),
+  startHint: $('startHint'),
 };
 
 let logCount = 0;
 let lastRawText = '';
 let busy = false;
+/** 到扩展后台的长连接：非空即代表「连接已开启」 */
+let port = null;
+/** 连接断开后的自动重连定时器 */
+let reconnectTimer = null;
 
 // ------------------------------------------------------------------ 工具
 function log(line) {
@@ -158,18 +167,208 @@ async function call(type, payload = {}, timeoutMs = 60000) {
 }
 
 // ------------------------------------------------------------------ 服务状态
-async function refreshHealth(quiet = false) {
-  setStatus('busy', '检查服务…');
+/**
+ * 连接状态语义（由后台推送，见 connectPanel）：
+ *   ok          —— 已连上本地服务，后台正在按 PANEL_HEARTBEAT_MS 心跳探活
+ *   checking    —— 正在检查
+ *   fail        —— 连不上本地服务（后台持续自动重试）
+ *   disconnected—— 与扩展后台的连接断了（后台被回收 / 扩展被重载）
+ */
+let linkState = 'checking';
+let linkEverConnected = false;
+
+/** 重连入口：连接断开或后台未就绪时点击状态灯可手动重连（正常情况下会自动重连） */
+function reconnectPanel() {
+  if (port || busy) return; // 已有连接，或正在提取，等它自己恢复
+  log('正在重新连接本地服务…');
+  connectPanel();
+}
+
+/**
+ * 侧边栏打开即建立到扩展后台的长连接。
+ *
+ * 这条连接就是「插件开着 = 服务连接开着」的载体：
+ *   - 打开：connect → 后台立刻做健康检查，并每 20s 心跳探活；
+ *   - 关闭侧边栏 / 关闭浏览器：浏览器自动断开该连接，后台随之清理，不再探活。
+ *
+ * 注意：服务进程本身是常驻的（`linkwork serve`），这里开关的是「连接」，
+ * 不会去启动或停止那个进程。
+ */
+function connectPanel() {
+  if (port) return;
+
+  setStatus('busy', '连接服务…');
+  setConnState('connecting');
+  let created;
   try {
-    const health = await call('service:health');
-    const asr = (health.asr || []).find((e) => e.available);
-    setStatus('ok', `服务已就绪${asr ? ` · ${asr.name}` : ''}`);
-    if (!quiet) log(`本地服务正常（v${health.version}，ASR：${asr ? asr.name : '无'}）`);
-    return health;
+    created = chrome.runtime.connect({ name: 'linkwork-panel' });
   } catch (err) {
-    setStatus('err', '服务未连接');
-    if (!quiet) log(`服务检查失败：${err.message}`);
-    return null;
+    // 后台暂不可用（扩展刚被重载等）：留到下一个重连周期再试
+    linkState = 'disconnected';
+    setStatus('err', '后台未就绪，自动重连中');
+    setConnState('off');
+    log(`建立连接失败：${err?.message || err}`);
+    scheduleReconnect();
+    return;
+  }
+  port = created;
+
+  created.onMessage.addListener((message) => {
+    if (message?.type !== 'service:state') return;
+    applyServiceState(message);
+  });
+
+  // 浏览器关闭、侧边栏关闭、扩展重载、后台被回收都会走到这里
+  created.onDisconnect.addListener(() => {
+    if (port !== created) return; // 已被更新的连接取代
+    port = null;
+    linkState = 'disconnected';
+    if (busy) {
+      // 正在提取时断开：重新连上，任务轮询才能继续
+      setStatus('busy', '连接中断，正在重连…');
+      setConnState('off');
+      log('与扩展后台的连接中断（后台可能被回收），正在自动重连…');
+    } else {
+      setStatus('err', '连接已断开（点此重连）');
+      setConnState('off');
+      log('与扩展后台的连接已断开（后台被回收或扩展已重载）');
+    }
+    scheduleReconnect();
+  });
+}
+
+/** 连接断开后的自动重连；重连成功即恢复状态灯与心跳 */
+function scheduleReconnect() {
+  clearInterval(reconnectTimer);
+  reconnectTimer = setInterval(() => {
+    if (port || busy) return; // 提取过程中不要打断现有流程
+    connectPanel();
+  }, 3000);
+}
+
+/** 把后台推送的连接状态落到界面上 */
+function applyServiceState(state) {
+  if (state.status === 'ok') {
+    if (!linkEverConnected) {
+      linkEverConnected = true;
+      const asr = (state.asr || []).find((e) => e.available);
+      log(`已连接本地服务（v${state.version || '?'}，ASR：${asr ? asr.name : '无'}），关掉侧边栏即自动断开`);
+    }
+  } else if (state.status !== 'checking' && linkState !== 'fail') {
+    log(`本地服务无法连接：${state.title || state.text || ''}`);
+  }
+  // 提取过程中右上角显示的是阶段进度，别被连接状态覆盖掉
+  if (!busy) {
+    if (state.status === 'ok') setStatus('ok', state.text || '已连接');
+    else if (state.status === 'checking') setStatus('busy', state.text || '检查服务…');
+    else setStatus('err', state.text || '服务未连接');
+  }
+  setConnState(state.status === 'ok' ? 'on' : 'off');
+  // 启动区提示：服务没连上时告诉用户「点按钮」或「本机启动器没装」
+  if (state.status === 'checking') {
+    els.startHint.textContent = '正在启动本地服务…';
+    els.startHint.className = 'hint';
+  } else if (state.status === 'ok') {
+    els.startHint.textContent = readAutoStartPref()
+      ? '打开侧边栏时若服务没跑，会自动启动。'
+      : '已连接。自动启动当前是关闭的。';
+    els.startHint.className = 'hint';
+  } else if (readAutoStartPref()) {
+    els.startHint.textContent = '自动启动失败或本机启动器未安装，可点「启动服务」重试。';
+    els.startHint.className = 'hint error';
+  } else {
+    els.startHint.textContent = '服务未运行。点「启动服务」立即启动，或勾选「打开时自动启动」。';
+    els.startHint.className = 'hint';
+  }
+  const box = els.statusText.parentElement;
+  if (box) {
+    box.title = state.title || '';
+    box.classList.toggle('clickable', state.status === 'fail' || state.status === 'disconnected');
+  }
+  linkState = state.status;
+}
+
+// ------------------------------------------------------------------ 启动本地服务
+/**
+ * 「服务没跑」时的处理：
+ *   - 打开面板时若勾了「打开时自动启动」，后台会自动通过 native host 拉起服务；
+ *   - 也可以随时点「启动服务」按钮手动拉起。
+ *
+ * 说明：浏览器扩展没有权限执行 shell 命令，真正执行的是已注册的 native host
+ * （native_host/linkwork_host.py，由 scripts/install_native_host.py 注册）。
+ */
+const AUTO_START_KEY = 'lw_auto_start_service';
+const INSTALL_HINT = '本会话无法启动服务：需要在项目目录运行 '
+  + '.venv/bin/python scripts/install_native_host.py 注册本机启动器，然后重启浏览器。';
+
+function readAutoStartPref() {
+  return localStorage.getItem(AUTO_START_KEY) !== '0'; // 默认开启
+}
+
+/** 把开关同步给后台（后台决定探活失败时要不要拉起服务） */
+async function syncAutoStartPref(quiet = true) {
+  const enabled = readAutoStartPref();
+  els.autoStartService.checked = enabled;
+  try {
+    await call('service:autoStart', { enabled }, 8000);
+  } catch (err) {
+    if (!quiet) log(`同步自动启动开关失败：${err.message}`);
+  }
+  return enabled;
+}
+
+/** 手动「启动服务」：请后台通过 native host 拉起，然后立刻重新探活 */
+async function startServiceManually() {
+  if (busy) return;
+  els.startServiceBtn.disabled = true;
+  setHint('正在启动本地服务…');
+  setStatus('busy', '正在启动服务…');
+  log('请求启动本地服务（通过本机启动器）…');
+  try {
+    const result = await call('service:start', {}, 90000);
+    log(`启动结果：${JSON.stringify(result)}`);
+    if (result?.alreadyRunning) {
+      log('服务本来就在运行（如果提取报 Operation not permitted，说明它是被受限环境启动的，需要先停掉它再启动）');
+    } else if (result?.pid) {
+      log(`服务已启动（PID ${result.pid}${result.cacheDir ? `，缓存 ${result.cacheDir}` : ''}）`);
+    }
+    if (result?.cacheNote) {
+      // 默认缓存目录不可写时 host 会换一个可写目录，这里必须告诉用户
+      els.startHint.textContent = result.cacheNote;
+      els.startHint.className = 'hint error';
+      log(`⚠️ ${result.cacheNote}`);
+      toast('已换用可写的缓存目录，详见日志', true);
+    }
+    await refreshCache();
+  } catch (err) {
+    const message = err.message || String(err);
+    log(`❌ 启动服务失败：${message}`);
+    els.startHint.textContent = message.includes('本机程序') || message.includes('not found') ? INSTALL_HINT : message;
+    els.startHint.className = 'hint error';
+    toast('启动服务失败，详见日志', true);
+  } finally {
+    els.startServiceBtn.disabled = false;
+  }
+}
+
+/** 右上角的「连接」开关状态：侧边栏开着就一直亮着，关掉侧边栏随之消失 */
+function setConnState(state) {
+  // 标题里也带上连接状态：浏览器标签/面板标题一眼可见，也便于外部自检读取
+  const suffix = state === 'on' ? '连接已开启' : state === 'off' ? '服务未连接' : '连接中';
+  document.title = `LinkWork 文案提取 · ${suffix}`;
+  if (!els.connState) return;
+  els.connState.classList.remove('on', 'off');
+  if (state === 'on') {
+    els.connState.classList.add('on');
+    els.connState.textContent = '连接已开启';
+    els.connState.title = '侧边栏打开期间保持与本地服务的连接；关闭侧边栏或退出浏览器即自动断开';
+  } else if (state === 'off') {
+    els.connState.classList.add('off');
+    els.connState.textContent = '服务未连接';
+    els.connState.title = '连不上本地服务。请确认已运行：linkwork serve';
+  } else {
+    els.connState.textContent = '连接中';
+    els.connState.title = '正在建立与本地服务的连接';
   }
 }
 
@@ -248,6 +447,25 @@ async function waitJob(jobId, label) {
 }
 
 // ------------------------------------------------------------------ 主流程
+/**
+ * 提取前的连接自检。
+ * 面板打开时后台已经连好并每 20s 探活，这里只是提取前再确认一次，
+ * 顺便把界面状态刷新到与服务一致（服务中途重启也不会误报）。
+ */
+async function ensureServiceReady() {
+  try {
+    const health = await call('service:health');
+    const asr = (health.asr || []).find((e) => e.available);
+    setStatus('ok', `已连接：${health.name || 'LinkWork 本地服务'}${asr ? ` · ${asr.name}` : ''}`);
+    linkState = 'ok';
+    return health;
+  } catch (err) {
+    setStatus('err', '服务未连接');
+    linkState = 'fail';
+    throw new Error(`本地服务未启动。${SERVICE_REQUIRED_HINT}（${err.message}）`);
+  }
+}
+
 async function runExtract() {
   if (busy) return;
 
@@ -265,8 +483,7 @@ async function runExtract() {
   els.resultMeta.textContent = '';
 
   try {
-    const health = await refreshHealth(true);
-    if (!health) throw new Error(`本地服务未启动。${SERVICE_REQUIRED_HINT}`);
+    await ensureServiceReady();
 
     if (!isUrl) {
       log('输入不是链接，按纯文本整理');
@@ -590,6 +807,36 @@ els.clearResultBtn.addEventListener('click', () => {
   setHint('');
 });
 
+// 连接离线时点状态灯即手动重连（正常情况下由后台自动重连，无需用户操作）
+els.statusText.parentElement.addEventListener('click', reconnectPanel);
+
+// 手动启动本地服务
+els.startServiceBtn.addEventListener('click', () => {
+  startServiceManually().catch((e) => toast(e.message, true));
+});
+els.installHostBtn.addEventListener('click', () => {
+  els.startHint.textContent = INSTALL_HINT;
+  els.startHint.className = 'hint';
+  log(INSTALL_HINT);
+  copyText('.venv/bin/python scripts/install_native_host.py', '本机启动器安装命令');
+});
+els.autoStartService.addEventListener('change', async () => {
+  localStorage.setItem(AUTO_START_KEY, els.autoStartService.checked ? '1' : '0');
+  await syncAutoStartPref(false);
+  log(els.autoStartService.checked ? '已开启：打开侧边栏时自动启动本地服务' : '已关闭：打开侧边栏时不自动启动服务');
+});
+
+// 侧边栏关闭 → 断开连接（浏览器关闭同样会断开；这里只是让断开更及时）
+window.addEventListener('beforeunload', () => {
+  clearInterval(reconnectTimer);
+  try {
+    port?.disconnect();
+  } catch {
+    /* 浏览器正在关闭，忽略 */
+  }
+  port = null;
+});
+
 // Ctrl/Cmd + Enter 快速提取
 els.urlInput.addEventListener('keydown', (event) => {
   if ((event.metaKey || event.ctrlKey) && event.key === 'Enter') {
@@ -598,13 +845,16 @@ els.urlInput.addEventListener('keydown', (event) => {
   }
 });
 
-// 初始化
+// 初始化：打开侧边栏 = 打开服务连接（必要时自动启动本地服务）
 (async () => {
   setHint('把视频 / 图文 / 网页链接粘贴到上方，点击「提取文案」。');
-  log('侧边栏已打开');
-  // 恢复自动清理偏好（默认开启，避免悄悄占空间）
+  log('侧边栏已打开，正在连接本地服务…');
+  // 恢复偏好（默认开启，避免悄悄占空间）
   els.autoClear.checked = localStorage.getItem(AUTO_CLEAR_KEY) !== '0';
-  await refreshHealth();
+  // 先把「自动启动」开关同步给后台，再建连：连不上时后台会顺手把服务拉起来
+  await syncAutoStartPref();
+  // 连接本身由后台负责探活；连上后会自动把状态推到界面
+  connectPanel();
   await refreshCache();
   els.urlInput.focus();
 })();

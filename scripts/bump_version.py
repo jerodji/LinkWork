@@ -14,6 +14,7 @@
     src/linkwork/__init__.py            __version__
     extension/manifest.json             浏览器扩展版本
     extension/extractor.js              取数逻辑 build 序号（每次改动 +1）
+    README.md                           「当前版本」一行（给使用者看的版本号）
 """
 
 from __future__ import annotations
@@ -29,6 +30,7 @@ MANIFEST = ROOT / "extension" / "manifest.json"
 PYPROJECT = ROOT / "pyproject.toml"
 INIT = ROOT / "src" / "linkwork" / "__init__.py"
 EXTRACTOR = ROOT / "extension" / "extractor.js"
+README = ROOT / "README.md"
 
 
 def read_version() -> str:
@@ -76,6 +78,15 @@ def write_all(version: str, *, bump_build: bool = True) -> dict:
         text = text.replace(f"const EXTRACTOR_BUILD = {current};", f"const EXTRACTOR_BUILD = {nxt};", 1)
         EXTRACTOR.write_text(text, encoding="utf-8")
         changed["extension/extractor.js (build)"] = str(nxt)
+
+    # README 的「当前版本」一行（没有该行就跳过，不让它阻塞版本递增）
+    text = README.read_text(encoding="utf-8")
+    new_text, count = re.subn(
+        r"(> \*\*当前版本\*\*：)[0-9]+\.[0-9]+\.[0-9]+", rf"\g<1>{version}", text, count=1
+    )
+    if count:
+        README.write_text(new_text, encoding="utf-8")
+        changed["README.md"] = version
 
     return changed
 

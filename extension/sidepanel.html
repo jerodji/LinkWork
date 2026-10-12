@@ -18,8 +18,24 @@
     <div class="status" id="serviceStatus" title="本地服务状态">
       <span class="dot" id="statusDot"></span>
       <span id="statusText">检查服务…</span>
+      <span id="connState" class="conn">连接中</span>
     </div>
   </header>
+
+  <section class="block" id="startBlock">
+    <div class="row between">
+      <span class="label" style="margin:0">本地服务</span>
+      <label class="check-inline" title="打开侧边栏时，若服务没跑就通过「本机启动器」自动把它拉起来">
+        <input type="checkbox" id="autoStartService" />
+        <span>打开时自动启动</span>
+      </label>
+    </div>
+    <div class="row" style="margin-top:6px">
+      <button id="startServiceBtn" class="btn">启动服务</button>
+      <button id="installHostBtn" class="btn ghost" title="查看本机启动器（native host）的安装方式">本机启动器帮助</button>
+    </div>
+    <p class="hint" id="startHint"></p>
+  </section>
 
   <section class="block">
     <label class="label" for="urlInput">分享链接</label>

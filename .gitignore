@@ -8,3 +8,6 @@ scripts/assets/LinkWork.iconset/
 *.egg-info/
 .DS_Store
 .pytest_cache/
+native_host/logs/
+native_host/linkwork-host
+native_host/host.conf

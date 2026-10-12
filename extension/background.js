@@ -5,6 +5,8 @@
  *  - 点击工具栏图标 → 打开右侧边栏
  *  - 与本地 Python 服务通信（健康检查、提交任务、轮询结果）
  *  - 读取页面数据：通过 chrome.scripting 在页面主世界（MAIN world）执行提取函数
+ *  - 维护「侧边栏连接」生命周期：侧边栏打开即建连并周期探活，
+ *    侧边栏关闭或浏览器退出即断开（见下方 panelBridge）
  *
  * 设计原则：失败就报错，不做降级猜测。
  */
@@ -12,6 +14,29 @@
 importScripts('extractor.js');
 
 const SERVICE_URL = 'http://127.0.0.1:17890';
+/** 侧边栏长连接的名字，sidepanel.js 必须使用同一个值 */
+const PANEL_PORT_NAME = 'linkwork-panel';
+/**
+ * 面板打开期间的探活间隔。
+ * 除了让界面上的状态灯反映真实连接状态，这串心跳还负责让 MV3 service worker
+ * 在侧边栏开着时不被浏览器回收（空闲 30s 即回收）——否则用户点「提取文案」时
+ * 后台可能已经不在了。
+ */
+const PANEL_HEARTBEAT_MS = 20000;
+/**
+ * native messaging host 的名字，必须与 scripts/install_native_host.py 里的一致。
+ * 它是「让插件把本地服务拉起来」的唯一通道：扩展无权执行 shell 命令，
+ * 只能通过这个已注册的本机程序代办（协议见 native_host/linkwork_host.py）。
+ */
+const NATIVE_HOST_NAME = 'com.linkwork.host';
+/** 自动拉起失败后的重试间隔（比心跳慢，避免反复拉起一个起不来的服务） */
+const AUTOSTART_RETRY_MS = 60000;
+/** 调用 native host 的超时（首次启动服务通常 1s 内，留足余量） */
+const NATIVE_HOST_TIMEOUT_MS = 45000;
+/** native host 瞬时失败（启动了但立刻退出）时的尝试次数 */
+const NATIVE_HOST_ATTEMPTS = 2;
+/** 两次尝试之间的退避（测试里可置 0 以便快速断言） */
+let nativeHostRetryDelayMs = 400;
 
 // ---------------------------------------------------------------- 侧边栏
 /**
@@ -43,6 +68,268 @@ chrome.action.onClicked.addListener(async (tab) => {
   }
 });
 
+// ------------------------------------------------- 侧边栏连接（开/关即连/断）
+/**
+ * 侧边栏打开时由 sidepanel.js 主动 connect 一条长连接，关闭时浏览器自动断开
+ * （浏览器退出、扩展重载、页面崩溃同样会断开，语义一致）。
+ *
+ * 连接存续期间：
+ *   - 立刻做一次健康检查并把结果推给面板（面板不用自己再问一次）；
+ *   - 之后每 PANEL_HEARTBEAT_MS 探活一次，状态变化才推送；
+ *   - 断开时清掉定时器，连接对象从表里移除。
+ *
+ * 注意：这里只负责「连接」的开关，不会去启动/停止本地服务进程
+ * （浏览器扩展无权拉起本机进程，服务进程需由 `linkwork serve` 常驻）。
+ */
+const panelLinks = new Map(); // port -> { port, windowId, timer, inflight, lastOk }
+
+/** 让 connect 消息与 sidepanel.js 彻底解耦：对方只认字符串，不需要数字枚举 */
+const HEALTH_OK = 'ok';
+const HEALTH_FAIL = 'fail';
+const HEALTH_CHECKING = 'checking';
+
+/** 健康检查结果 → 面板可读的状态描述 */
+function describeHealth(result) {
+  if (!result || result.status === HEALTH_FAIL) {
+    return {
+      status: HEALTH_FAIL,
+      text: '服务未连接',
+      title: result?.error
+        ? `${result.error}（自动重连中）`
+        : '无法连接本地服务，自动重连中',
+    };
+  }
+  if (result.status === HEALTH_CHECKING) {
+    return { status: HEALTH_CHECKING, text: '检查服务…', title: '正在检查本地服务' };
+  }
+  const asr = (result.asr || []).find((entry) => entry.available);
+  const name = result.serviceName || 'LinkWork 本地服务';
+  const title = [
+    `已连接 ${SERVICE_URL}`,
+    `版本 v${result.version || '?'}`,
+    `语音识别：${asr ? asr.name : '不可用'}`,
+    `最近检查：${result.checkedAt || ''}`,
+  ].join('\n');
+  return {
+    status: HEALTH_OK,
+    text: `已连接：${name}${asr ? ` · ${asr.name}` : ''}`,
+    title,
+  };
+}
+
+/** 统一向某条连接推消息；连接已断开时忽略（不能因此抛错打断查询流程） */
+function postPanelMessage(link, message) {
+  try {
+    link.port.postMessage(message);
+  } catch {
+    /* 对端已关闭：onDisconnect 会负责清理 */
+  }
+}
+
+/** 查询本地服务健康状态，永远返回结构化结果（不抛异常） */
+async function probePanelService() {
+  try {
+    const health = await serviceRequest('/api/health', 'GET', null, 4000);
+    return {
+      status: HEALTH_OK,
+      version: health?.version || '',
+      asr: Array.isArray(health?.asr) ? health.asr : [],
+      serviceName: health?.name || '',
+      checkedAt: new Date().toLocaleTimeString('zh-CN', { hour12: false }),
+    };
+  } catch (err) {
+    return { status: HEALTH_FAIL, error: describeError(err) };
+  }
+}
+
+/** 探活一次并（仅状态变化时）推送给面板 */
+async function refreshPanelLink(link) {
+  if (link.inflight) return; // 上一轮还没回来，不叠加请求
+  link.inflight = true;
+  try {
+    let result = await probePanelService();
+    // 服务没跑 + 自动启动开关为开 → 通过 native host 把它拉起来，再探一次
+    if (result.status !== HEALTH_OK && await shouldAutoStart(link)) {
+      postPanelMessage(link, {
+        type: 'service:state',
+        status: HEALTH_CHECKING,
+        text: '正在启动本地服务…',
+        title: '已通过本机程序启动 linkwork serve，首次启动需要几秒',
+      });
+      const started = await startServiceViaHost(link);
+      if (!started.ok) {
+        result = { status: HEALTH_FAIL, error: started.error };
+      } else {
+        result = await probePanelService();
+      }
+    }
+    const next = describeHealth(result);
+    const changed = next.status !== link.lastStatus || next.text !== link.lastText;
+    link.lastStatus = next.status;
+    link.lastText = next.text;
+    // 首轮检查（lastStatus 为空）一定推送；之后只在变化时推送，避免刷屏
+    if (changed || !link.reported) {
+      link.reported = true;
+      postPanelMessage(link, { type: 'service:state', ...next });
+    }
+  } finally {
+    link.inflight = false;
+  }
+}
+
+// ------------------------------------------------- 通过 native host 启动服务
+/**
+ * 自动启动开关（面板上的勾选框，默认开启）。
+ * 存在 chrome.storage.local，重启浏览器后仍然有效。
+ */
+const AUTO_START_KEY = 'autoStartService';
+let autoStartService = true;
+
+async function syncAutoStart() {
+  try {
+    const stored = await chrome.storage.local.get(AUTO_START_KEY);
+    autoStartService = stored?.[AUTO_START_KEY] !== false;
+  } catch {
+    autoStartService = true;
+  }
+  return autoStartService;
+}
+
+async function setAutoStart(value) {
+  autoStartService = Boolean(value);
+  try {
+    await chrome.storage.local.set({ [AUTO_START_KEY]: autoStartService });
+  } catch (err) {
+    console.warn('[LinkWork] 保存自动启动开关失败：', err);
+  }
+  return autoStartService;
+}
+
+/** 判断这次探活失败该不该顺手把服务拉起来 */
+async function shouldAutoStart(link) {
+  if (!autoStartService) return false;
+  if (link.startBlockedUntil > Date.now()) return false; // 刚失败过，等冷却
+  return true;
+}
+
+/**
+ * 请 native host 拉起本地服务。协议见 native_host/linkwork_host.py。
+ *
+ * 失败要能解释清楚，因为这一步常见的坑是：
+ *   1. 没装 native host（未注册 / 未重启浏览器）→ "Specified native messaging host not found"；
+ *   2. 扩展 ID 与注册时允许的不一致 → "Access to the specified native messaging host is forbidden"；
+ *   3. 本机程序启动了但立刻退出 → "Native host has exited"
+ *      （最常见原因是首次运行时进程还没跑到读消息就被回收，重试一次往往就好了；
+ *        重试仍失败则要看 ~/Library/Logs/LinkWork-native-host.log）。
+ */
+async function startServiceViaHost(link) {
+  if (link.startInFlight) return { ok: false, error: '正在启动中，请稍候' };
+  link.startInFlight = true;
+  try {
+    let lastError = null;
+    for (let attempt = 1; attempt <= NATIVE_HOST_ATTEMPTS; attempt += 1) {
+      try {
+        const response = await sendNativeMessageWithTimeout({ action: 'start' }, NATIVE_HOST_TIMEOUT_MS);
+        if (!response) throw new Error('本机程序没有返回结果');
+        if (!response.ok) throw new Error(response.error || '本机程序启动服务失败');
+        console.log(`[LinkWork] native host 已启动本地服务（第 ${attempt} 次尝试）：`, JSON.stringify(response));
+        return { ok: true, data: response };
+      } catch (err) {
+        lastError = err;
+        const message = describeError(err);
+        // 「启动了但立刻退出」多为瞬时故障（首次运行、进程竞态），退避后再给一次机会
+        if (attempt < NATIVE_HOST_ATTEMPTS && /exited|has exited|没有返回结果|disconnected/i.test(message)) {
+          console.warn(`[LinkWork] native host 第 ${attempt} 次启动失败，准备重试：${message}`);
+          await new Promise((resolve) => setTimeout(resolve, nativeHostRetryDelayMs));
+          continue;
+        }
+        throw err;
+      }
+    }
+    throw lastError || new Error('本机程序启动服务失败');
+  } catch (err) {
+    const message = describeError(err);
+    link.startBlockedUntil = Date.now() + AUTOSTART_RETRY_MS;
+    const hint = /not found|找不到/.test(message)
+      ? '（还没安装本机启动器：在项目目录运行 .venv/bin/python scripts/install_native_host.py，然后重启浏览器）'
+      : /forbidden|拒绝|not allowed/.test(message)
+        ? '（扩展 ID 与本机启动器注册的不一致：重跑 install_native_host.py 让它读到真实 ID）'
+        : /exited/i.test(message)
+          ? '（本机启动器启动后立刻退出了；已重试仍失败，请查看 ~/Library/Logs/LinkWork-native-host.log）'
+          : '';
+    console.warn('[LinkWork] 自动启动本地服务失败：', message);
+    return { ok: false, error: `自动启动本地服务失败：${message}${hint}` };
+  } finally {
+    link.startInFlight = false;
+  }
+}
+
+/** 带超时的 sendNativeMessage：host 卡住时不能让界面无限等 */
+function sendNativeMessageWithTimeout(message, timeoutMs) {
+  return Promise.race([
+    chrome.runtime.sendNativeMessage(NATIVE_HOST_NAME, message),
+    new Promise((_, reject) => {
+      setTimeout(() => reject(new Error(`本机程序 ${Math.round(timeoutMs / 1000)}s 内没有响应`)), timeoutMs);
+    }),
+  ]);
+}
+
+/** 请 native host 启动服务（供面板按钮使用；没有活动连接时也能用） */
+async function startServiceForAnyLink() {
+  const link = panelLinks.values().next().value;
+  if (link) {
+    const result = await startServiceViaHost(link);
+    if (!result.ok) throw new Error(result.error);
+    await refreshPanelLink(link);
+    return result.data || { ok: true };
+  }
+  // 面板还没建连（少见）：临时造一个只用于启动的上下文
+  return startServiceViaHost({ startInFlight: false, startBlockedUntil: 0 })
+    .then((result) => {
+      if (!result.ok) throw new Error(result.error);
+      return result.data || { ok: true };
+    });
+}
+
+/** 建立一条侧边栏连接：立刻检查（+ 按需拉起服务）+ 起心跳 */
+function attachPanelLink(port, sender) {
+  const origin = sender || port.sender || null;
+  const link = {
+    port,
+    // 侧边栏是扩展页（不是标签页），windowId 直接挂在 sender 上；
+    // 若将来从标签页侧连接，则退回到 sender.tab.windowId。
+    windowId: origin?.tab?.windowId ?? origin?.windowId ?? null,
+    timer: null,
+    inflight: false,
+    reported: false,
+    lastStatus: '',
+    lastText: '',
+    startInFlight: false,
+    startBlockedUntil: 0,
+  };
+  panelLinks.set(port, link);
+  console.log(`[LinkWork] 侧边栏已打开，建立服务连接（第 ${panelLinks.size} 条）`);
+  // 开关先同步（异步），再立刻探活——探活时若服务没跑且开关为开，就会自动拉起
+  syncAutoStart().finally(() => refreshPanelLink(link));
+  link.timer = setInterval(() => refreshPanelLink(link), PANEL_HEARTBEAT_MS);
+  return link;
+}
+
+/** 侧边栏关闭/浏览器退出/扩展重载：断开连接，停止探活 */
+function detachPanelLink(port) {
+  const link = panelLinks.get(port);
+  if (!link) return;
+  clearInterval(link.timer);
+  panelLinks.delete(port);
+  console.log(`[LinkWork] 侧边栏已关闭，服务连接断开（剩余 ${panelLinks.size} 条）`);
+}
+
+chrome.runtime.onConnect.addListener((port) => {
+  if (port.name !== PANEL_PORT_NAME) return;
+  attachPanelLink(port, port.sender);
+  port.onDisconnect.addListener(() => detachPanelLink(port));
+});
+
 // ---------------------------------------------------------------- 消息路由
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   handleMessage(message, sender)
@@ -64,6 +351,13 @@ async function handleMessage(message) {
   switch (message?.type) {
     case 'service:health':
       return serviceRequest('/api/health', 'GET', null, 4000);
+    case 'service:start':
+      // 面板上的「启动服务」按钮：借任一活动连接走 native host
+      return startServiceForAnyLink();
+    case 'service:autoStart':
+      return setAutoStart(message.enabled);
+    case 'service:autoStartState':
+      return { enabled: await syncAutoStart() };
     case 'service:resolve':
       return serviceRequest('/api/resolve', 'POST', { url: message.url });
     case 'service:format':
@@ -332,3 +626,27 @@ async function fetchMediaInPage(tabId, mediaUrl, maxBytes) {
  * ⚠️ 这个函数会被序列化后在页面主世界执行，不能引用外部变量或闭包。
  * 它是整个扩展的"取数入口"：读取平台注入的数据、DOM 文案、媒体地址。
  */
+
+/**
+ * 测试钩子：把连接生命周期的内部对象暴露出来，供 tests/background_boot.test.js
+ * 直接驱动（MV3 里没有别的办法观察 service worker 内部状态）。
+ * 只读不写，正式运行时不参与任何逻辑。
+ */
+globalThis.__linkworkPanelBridge = {
+  PANEL_PORT_NAME,
+  PANEL_HEARTBEAT_MS,
+  NATIVE_HOST_NAME,
+  AUTOSTART_RETRY_MS,
+  NATIVE_HOST_TIMEOUT_MS,
+  NATIVE_HOST_ATTEMPTS,
+  setNativeHostRetryDelay: (ms) => { nativeHostRetryDelayMs = ms; },
+  panelLinks,
+  attachPanelLink,
+  detachPanelLink,
+  refreshPanelLink,
+  describeHealth,
+  syncAutoStart,
+  setAutoStart,
+  startServiceViaHost,
+  isAutoStartEnabled: () => autoStartService,
+};

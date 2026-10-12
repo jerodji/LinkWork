@@ -74,7 +74,28 @@ body {
 }
 .dot.ok { background: var(--ok); }
 .dot.err { background: var(--err); }
-.dot.busy { background: var(--warn); }
+.dot.busy { background: var(--warn); animation: dot-pulse 1.2s ease-in-out infinite; }
+
+/* 服务离线时可点击状态灯手动重连（正常情况后台会自动重连） */
+.status.clickable { cursor: pointer; }
+.status.clickable:hover { color: var(--text); }
+.status.clickable:hover #statusText { text-decoration: underline; }
+
+/* 连接开关状态：打开侧边栏即亮起，关闭即熄灭 */
+.conn {
+  font-size: 10px;
+  padding: 1px 5px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  color: var(--text-dim);
+}
+.conn.on { color: var(--ok); border-color: var(--ok); }
+.conn.off { color: var(--err); border-color: var(--err); }
+
+@keyframes dot-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.35; }
+}
 
 .block {
   background: var(--panel);
@@ -136,6 +157,7 @@ body {
 .result-meta { font-size: 11px; color: var(--text-dim); text-align: right; }
 
 .row { display: flex; gap: 8px; margin-top: 8px; flex-wrap: wrap; }
+.row.between { justify-content: space-between; align-items: center; margin-top: 0; }
 
 .btn {
   border: 1px solid var(--border);

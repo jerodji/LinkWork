@@ -11,6 +11,14 @@
 
 用法：
     .venv/bin/python scripts/verify_extension_browser.py
+    .venv/bin/python scripts/verify_extension_browser.py --worker          # 进 worker 上下文
+    .venv/bin/python scripts/verify_extension_browser.py --panel --shot out.png   # 侧边栏渲染 + 截图
+    .venv/bin/python scripts/verify_extension_browser.py --panel --connect # 连接开/关生命周期
+
+⚠️ 已知环境限制：部分 macOS 机器上 Chromium 会在连接后约 0.5s 主动断开 DevTools
+   WebSocket（code 1006，Edge/Chrome 皆然，与 --remote-allow-origins 无关），
+   表现为大量 ConnectionClosedError / HTTP 502。此时本脚本的浏览器内检查无法完成，
+   请改用界面自证：打开侧边栏看右上角是否显示「连接已开启」，关掉侧边栏再看日志。
 """
 
 from __future__ import annotations
@@ -52,6 +60,10 @@ async def verify() -> int:
         [
             EDGE,
             f"--remote-debugging-port={PORT}",
+            # Chromium 111+ 会拒绝带 Origin 头的 DevTools WebSocket 连接，
+            # 而 Python websockets 默认会带 Origin —— 不加这个开关，
+            # 页面/worker 目标一连接就 502（脚本此前就卡在这里）。
+            "--remote-allow-origins=*",
             f"--user-data-dir={profile}",
             f"--load-extension={EXT_DIR}",
             "--no-first-run",
@@ -115,6 +127,12 @@ async def verify() -> int:
                 await _check_panel(panel_url, shot_path=shot)
             except Exception as exc:  # noqa: BLE001
                 print(f"⚠️  面板检查失败：{type(exc).__name__}: {exc}")
+            if "--connect" in sys.argv:
+                # 连接生命周期检查会关掉侧边栏页面，放在渲染检查之后单独跑
+                try:
+                    await _check_connect(ext_id)
+                except Exception as exc:  # noqa: BLE001
+                    print(f"⚠️  连接检查失败：{type(exc).__name__}: {exc}")
             return 0
 
         # --worker 模式：直接进入扩展的 service worker 上下文做检查
@@ -257,6 +275,176 @@ async def _check_worker(ext_id: str) -> None:
         await ws2.close()
 
 
+async def _check_connect(ext_id: str) -> None:
+    """验证「打开侧边栏 = 建立服务连接，关闭 = 断开」在真实浏览器里成立。
+
+    做法（全程只读，不改扩展状态）：
+      1. 打开侧边栏页面 → 界面状态灯应变为「已连接」（或明确的服务未连接）；
+      2. 进 service worker 上下文读 __linkworkPanelBridge.panelLinks.size == 1；
+      3. 关掉侧边栏页面 → worker 里该连接应被清理（size 回到 0）。
+
+    用法： .venv/bin/python scripts/verify_extension_browser.py --panel --connect
+    """
+    import json as _json
+
+    import websockets as _ws
+
+    panel_url = f"chrome-extension://{ext_id}/sidepanel.html"
+
+    async def worker_eval(expression: str):
+        """在扩展的 service worker 里执行表达式；找不到 worker 就返回 None"""
+        target = None
+        for _ in range(20):
+            for t in http_json("/json/list"):
+                url = t.get("url") or ""
+                if t.get("type") in ("service_worker", "background_page") and ext_id in url:
+                    target = t
+                    break
+            if target:
+                break
+            await asyncio.sleep(0.5)
+        if not target:
+            return None
+        ws2 = await _ws.connect(target["webSocketDebuggerUrl"], proxy=None)
+        try:
+            counter = {"i": 0}
+
+            async def call(method, params=None, timeout=15):
+                counter["i"] += 1
+                mid = counter["i"]
+                await ws2.send(_json.dumps({"id": mid, "method": method, "params": params or {}}))
+                while True:
+                    data = _json.loads(await asyncio.wait_for(ws2.recv(), timeout=timeout))
+                    if data.get("id") == mid:
+                        return data.get("result", {})
+
+            await call("Runtime.enable")
+            result = await call(
+                "Runtime.evaluate",
+                {"expression": expression, "returnByValue": True, "awaitPromise": True},
+            )
+            if result.get("exceptionDetails"):
+                return {"__error": _json.dumps(result["exceptionDetails"], ensure_ascii=False)[:200]}
+            return result.get("result", {}).get("value")
+        finally:
+            await ws2.close()
+
+    async def wait_links(expected: int, timeout: float = 8.0):
+        """等 panelLinks.size 变成期望值，返回最后读到的值"""
+        deadline = time.time() + timeout
+        seen = None
+        while time.time() < deadline:
+            value = await worker_eval("globalThis.__linkworkPanelBridge?.panelLinks?.size ?? -1")
+            if isinstance(value, int):
+                seen = value
+                if value == expected:
+                    return value
+            await asyncio.sleep(0.5)
+        return seen
+
+    pages = [t for t in http_json("/json/list") if t.get("type") == "page"]
+    if not pages:
+        print("没有可用页面目标")
+        return
+    # 优先占用一个空白页来当侧边栏；否则借用第一个页面，结束时再恢复
+    blank = next((t for t in pages if (t.get("url") or "") in ("about:blank", "")), None)
+    page = blank or pages[0]
+    borrow = blank is None
+    page_id = page.get("id") or ""
+    original_url = page.get("url") or "about:blank"
+    ws = await _ws.connect(page["webSocketDebuggerUrl"], proxy=None)
+    counter = {"i": 0}
+
+    async def call(method: str, params: dict | None = None, timeout: float = 15):
+        counter["i"] += 1
+        mid = counter["i"]
+        await ws.send(_json.dumps({"id": mid, "method": method, "params": params or {}}))
+        while True:
+            data = _json.loads(await asyncio.wait_for(ws.recv(), timeout=timeout))
+            if data.get("id") == mid:
+                return data.get("result", {})
+
+    ok = True
+    try:
+        print("=== 连接生命周期检查 ===")
+        await call("Runtime.enable")
+        await call("Page.enable")
+        await call("Page.navigate", {"url": panel_url})
+        # 打开侧边栏：界面状态灯应自动变为已连接（本地服务在跑的前提下）
+        status = ""
+        ok_class = ""
+        conn_state = ""
+        for _ in range(20):
+            await asyncio.sleep(0.5)
+            value = await call(
+                "Runtime.evaluate",
+                {
+                    "expression": """(() => {
+                        const dot = document.getElementById('statusDot');
+                        const text = document.getElementById('statusText');
+                        const conn = document.getElementById('connState');
+                        return {
+                          text: text ? text.textContent : '',
+                          dotClass: dot ? dot.className : '',
+                          conn: conn ? conn.textContent : '',
+                          log: (document.getElementById('logBox')?.textContent || '').slice(0, 400),
+                        };
+                    })()""",
+                    "returnByValue": True,
+                },
+            )
+            info = value.get("result", {}).get("value") or {}
+            status = info.get("text") or ""
+            ok_class = info.get("dotClass") or ""
+            conn_state = info.get("conn") or ""
+            if "ok" in ok_class.split():
+                break
+        print(f"侧边栏状态灯    ：{ok_class!r}")
+        print(f"侧边栏状态文案  ：{status!r}")
+        print(f"连接开关标签    ：{conn_state!r}")
+        if "ok" in ok_class.split():
+            print("✅ 打开侧边栏后已自动连上本地服务")
+        else:
+            ok = False
+            print("❌ 打开侧边栏后未连上本地服务（若服务未运行，请先 ./scripts/service.sh start）")
+
+        links = await wait_links(1, timeout=8)
+        print(f"\nworker 里的活动连接数：{links}")
+        if links == 1:
+            print("✅ 后台登记了 1 条侧边栏连接（并已起心跳探活）")
+        else:
+            ok = False
+            print("❌ 后台没有登记到侧边栏连接")
+
+        # 关闭侧边栏页面 → 连接应被清理
+        try:
+            http_json(f"/json/close/{page_id}")
+        except Exception as exc:  # noqa: BLE001
+            print(f"⚠️  关闭侧边栏页面失败：{exc}")
+        after = await wait_links(0, timeout=8)
+        print(f"关闭侧边栏后的连接数：{after}")
+        if after == 0:
+            print("✅ 关闭侧边栏后连接已自动断开（心跳随之停止）")
+        else:
+            ok = False
+            print("❌ 关闭侧边栏后连接仍存在，未自动断开")
+
+        if borrow:
+            # 借用了别人的页面：把原地址还回去
+            try:
+                await call("Page.navigate", {"url": original_url})
+                print(f"（已把借用的页面恢复到 {original_url}）")
+            except Exception as exc:  # noqa: BLE001
+                print(f"⚠️  恢复借用页面失败：{exc}")
+    finally:
+        try:
+            await ws.close()
+        except Exception:  # noqa: BLE001
+            pass
+
+    print("\n结论：", "✅ 通过" if ok else "❌ 未通过")
+
+
 async def _check_panel(panel_url: str, shot_path: str = "") -> None:
     """把侧边栏页面当普通网页打开，检查元素渲染与脚本报错；可选截图。"""
     import base64 as _b64
@@ -300,6 +488,7 @@ async def _check_panel(panel_url: str, shot_path: str = "") -> None:
                     hasResult: !!document.getElementById('resultBox'),
                     hasCopyBtn: !!document.getElementById('copyBtn'),
                     status: (document.getElementById('statusText') || {}).textContent || null,
+                    connState: (document.getElementById('connState') || {}).textContent || null,
                     bodyLen: document.body.innerText.length,
                     visibleText: document.body.innerText.slice(0, 200),
                 }))()""",
