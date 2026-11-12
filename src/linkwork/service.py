@@ -32,7 +32,7 @@ from .diagnostics import (
 )
 from .errors import LinkWorkError
 from .jobs import Job, JobManager
-from .pipeline import ExtractOptions, extract_url
+from .pipeline import ExtractOptions, calibrate_result, extract_url
 from .resolvers.base import ResolveContext
 from .textnorm import normalize_cjk
 from .transcribe import transcribe_local_media
@@ -71,6 +71,7 @@ class ServiceConfig:
         asr_model: str = "small",
         language: str | None = None,
         keep_temp: bool = False,
+        calibrate: bool = True,
     ) -> None:
         self.host = host
         self.port = port
@@ -80,11 +81,12 @@ class ServiceConfig:
         self.asr_model = asr_model
         self.language = language
         self.keep_temp = keep_temp
+        self.calibrate = calibrate
 
 
 def _dump_result(result, *, text: str | None = None) -> dict[str, Any]:
     """把 ExtractResult 转成给插件的精简结构。"""
-    body = text if text is not None else (result.spoken_script or result.text)
+    body = text if text is not None else result.display_text
     return {
         "text": body.strip(),
         "title": result.title,
@@ -116,7 +118,11 @@ class LinkWorkService:
         if provided != self.config.token:
             raise AuthError("Token 不匹配：请确认插件与服务使用同一密钥")
 
-    def _extract_options(self, *, quiet: bool = True) -> ExtractOptions:
+    def _extract_options(
+        self, payload: dict[str, Any] | None = None, *, quiet: bool = True
+    ) -> ExtractOptions:
+        payload = payload or {}
+        calibrate = payload.get("calibrate")
         return ExtractOptions(
             out_dir=self.config.out_dir or (Path.cwd() / "output"),
             formats=("md", "txt"),
@@ -124,6 +130,9 @@ class LinkWorkService:
             asr_model=self.config.asr_model,
             language=self.config.language,
             keep_temp=self.config.keep_temp,
+            calibrate=self.config.calibrate if calibrate is None else bool(calibrate),
+            llm_api_key=str(payload.get("api_key") or "").strip() or None,
+            llm_model=str(payload.get("model") or "").strip() or None,
             quiet=quiet,
         )
 
@@ -151,9 +160,10 @@ class LinkWorkService:
         job = self.jobs.create("resolve")
 
         def work(progress) -> dict[str, Any]:
-            options = self._extract_options()
+            options = self._extract_options(payload)
             options.progress = progress
             result = extract_url(url, options)
+            calibrate_result(result, options, progress=progress)
             return _dump_result(result)
 
         self.jobs.run_async(job, work)
@@ -203,7 +213,7 @@ class LinkWorkService:
                     tlog.note("媒体文件", f"{media_path.name}（{media_path.stat().st_size / 1048576:.2f} MB）")
 
                     # 复用 core 的「转 WAV + 校验 + 识别」流程
-                    options = self._extract_options()
+                    options = self._extract_options(payload)
                     ctx = ResolveContext(
                         workdir=workdir,
                         asr_engine=options.engine_name(),
@@ -231,6 +241,7 @@ class LinkWorkService:
                     )
                     if not segments:
                         raise LinkWorkError("没有识别到任何语音内容（该媒体可能无人声）")
+                    calibrate_result(result, options, progress=progress)
                     tlog.done(
                         {
                             "分段数": len(segments),
@@ -426,6 +437,7 @@ class LinkWorkService:
                 engine="macOS Vision OCR",
                 warnings=warnings,
             )
+            calibrate_result(result, self._extract_options(payload), progress=progress)
             return _dump_result(result)
           finally:
             from . import cache  # noqa: PLC0415
@@ -463,6 +475,20 @@ class LinkWorkService:
             raise LinkWorkError("页面文本过少，无法生成文案（可尝试在页面上滚动加载后重试）")
 
         body = normalize_cjk(text)
+        from .models import ExtractResult  # noqa: PLC0415
+
+        result = ExtractResult(
+            url=url,
+            kind=kind,  # type: ignore[arg-type]
+            method="html",
+            title=title,
+            author=author,
+            platform=str(payload.get("platform") or ""),
+            text=body,
+        )
+        calibrate_result(result, self._extract_options(payload))
+        body = result.display_text
+
         header_bits = [bit for bit in (title, author) if bit]
         lines: list[str] = []
         if header_bits:
@@ -482,7 +508,7 @@ class LinkWorkService:
             "char_count": len(re.sub(r"\s+", "", body)),
             "segment_count": 0,
             "url": url,
-            "warnings": [],
+            "warnings": list(result.warnings),
         }
 
 

@@ -57,6 +57,30 @@ body {
   flex: none;
 }
 
+.header-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.icon-btn {
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  display: grid;
+  place-items: center;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: #fff;
+  color: var(--text-dim);
+  cursor: pointer;
+  flex: none;
+  transition: background 0.15s, color 0.15s, border-color 0.15s;
+}
+.icon-btn:hover { background: #f0f2f5; color: var(--text); }
+.icon-btn svg { width: 14px; height: 14px; }
+
 .brand { display: flex; align-items: center; gap: 8px; }
 
 .logo {

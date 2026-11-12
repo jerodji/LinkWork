@@ -48,7 +48,7 @@ def build_markdown(result: ExtractResult) -> str:
     if result.segments:
         lines.append("## 口播稿")
         lines.append("")
-        lines.append(result.spoken_script)
+        lines.append(result.display_text)
         lines.append("")
         lines.append("## 带时间戳原文")
         lines.append("")
@@ -58,7 +58,7 @@ def build_markdown(result: ExtractResult) -> str:
     else:
         lines.append("## 文案正文")
         lines.append("")
-        lines.append(result.text)
+        lines.append(result.display_text)
         lines.append("")
         extra_desc = result.extra.get("description")
         if extra_desc and extra_desc not in result.text:
@@ -101,7 +101,7 @@ def build_text(result: ExtractResult) -> str:
     lines.append(f"字数：{result.char_count}")
     lines.append(_BAR)
     lines.append("")
-    lines.append(result.spoken_script if result.segments else result.text)
+    lines.append(result.display_text)
     extra_desc = result.extra.get("description")
     if extra_desc and extra_desc not in result.text and not result.segments:
         lines.append("")

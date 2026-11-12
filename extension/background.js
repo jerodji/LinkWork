@@ -390,9 +390,14 @@ async function handleMessage(message) {
     case 'service:autoStartState':
       return { enabled: await syncAutoStart() };
     case 'service:resolve':
-      return serviceRequest('/api/resolve', 'POST', { url: message.url });
+      return serviceRequest('/api/resolve', 'POST', {
+        url: message.url,
+        api_key: message.apiKey,
+        model: message.model,
+        calibrate: message.calibrate,
+      });
     case 'service:format':
-      return serviceRequest('/api/format', 'POST', message.payload);
+      return serviceRequest('/api/format', 'POST', message.payload, 120000);
     case 'service:transcribe':
       return serviceRequest('/api/transcribe', 'POST', message.payload, 120000);
     case 'service:job':

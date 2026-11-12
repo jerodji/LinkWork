@@ -45,6 +45,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--cookies", default=None, help="cookies 文件路径，或 browser:chrome 形式")
     parser.add_argument("--proxy", default=None, help="代理，如 http://127.0.0.1:7890")
     parser.add_argument("--subtitles-only", action="store_true", help="只提取平台字幕/网页文本，不做语音识别")
+    parser.add_argument(
+        "--no-calibrate",
+        action="store_true",
+        help="关闭文案校准（默认用 GLM-4.7-Flash 只修正错别字/标点/分段）",
+    )
     parser.add_argument("--keep-temp", action="store_true", help="保留临时音频文件（调试用）")
     parser.add_argument("--stdin", action="store_true", help="从标准输入逐行读取链接")
     parser.add_argument("--print", dest="print_text", action="store_true", help="把提取结果打印到终端")
@@ -71,7 +76,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.doctor:
         return doctor()
     if args.serve:
-        return serve(host=args.host, port=args.port)
+        return serve(host=args.host, port=args.port, calibrate=not args.no_calibrate)
 
     inputs = list(args.inputs)
     if args.stdin:
@@ -88,6 +93,7 @@ def main(argv: list[str] | None = None) -> int:
         language=args.lang,
         subtitles_only=args.subtitles_only,
         keep_temp=args.keep_temp,
+        calibrate=not args.no_calibrate,
         quiet=not args.verbose,
     )
     if args.out:
@@ -132,12 +138,13 @@ def _summary(output: PipelineOutput, index: int, *, print_text: bool = False) ->
         lines.append(build_text(result))
     return "\n".join(lines)
 
-def serve(host: str | None = None, port: int | None = None) -> int:
+def serve(host: str | None = None, port: int | None = None, *, calibrate: bool = True) -> int:
     """启动本地服务，供浏览器插件调用。"""
     config = ServiceConfig(
         host=host or DEFAULT_HOST,
         port=port or DEFAULT_PORT,
         out_dir=Path.cwd() / "output",
+        calibrate=calibrate,
     )
     try:
         return run_service(config)

@@ -40,7 +40,76 @@ const els = {
   startServiceBtn: $('startServiceBtn'),
   installHostBtn: $('installHostBtn'),
   startHint: $('startHint'),
+  settingsBtn: $('settingsBtn'),
 };
+
+// ------------------------------------------------------------------ 设置
+const SETTINGS_KEY = 'linkwork.settings';
+const DEFAULT_SETTINGS = { apiKey: '', model: 'glm-4.7-flash', calibrate: true };
+let appSettings = { ...DEFAULT_SETTINGS };
+
+function normalizeSettings(raw) {
+  const value = raw && typeof raw === 'object' ? raw : {};
+  return {
+    apiKey: typeof value.apiKey === 'string' ? value.apiKey.trim() : '',
+    model: (typeof value.model === 'string' && value.model.trim()) || DEFAULT_SETTINGS.model,
+    calibrate: value.calibrate !== false,
+  };
+}
+
+async function loadAppSettings() {
+  try {
+    appSettings = normalizeSettings(await readAppSettingsRaw());
+  } catch {
+    appSettings = { ...DEFAULT_SETTINGS };
+  }
+  return appSettings;
+}
+
+/** 扩展存储不可用（例如扩展未重新加载）时退回 localStorage，与设置页保持同一来源 */
+function extensionStorage() {
+  try {
+    return globalThis.chrome?.storage?.local || null;
+  } catch {
+    return null;
+  }
+}
+
+async function readAppSettingsRaw() {
+  const storage = extensionStorage();
+  if (storage) {
+    try {
+      const data = await storage.get(SETTINGS_KEY);
+      return data?.[SETTINGS_KEY] ?? null;
+    } catch {
+      /* chrome.storage 不可用时退回 localStorage */
+    }
+  }
+  try {
+    const raw = localStorage.getItem(SETTINGS_KEY);
+    return raw ? JSON.parse(raw) : null;
+  } catch {
+    return null;
+  }
+}
+
+/** 发给 /api/resolve（由后台转成 api_key/model） */
+function resolveCalibration() {
+  return {
+    apiKey: appSettings.apiKey || undefined,
+    model: appSettings.model || undefined,
+    calibrate: appSettings.calibrate !== false,
+  };
+}
+
+/** 直接并入 /api/transcribe、/api/ocr 的 payload */
+function calibrationPayload() {
+  return {
+    api_key: appSettings.apiKey || undefined,
+    model: appSettings.model || undefined,
+    calibrate: appSettings.calibrate !== false,
+  };
+}
 
 let logCount = 0;
 let lastRawText = '';
@@ -521,8 +590,8 @@ async function runExtract() {
     if (!isUrl) {
       log('输入不是链接，按纯文本整理');
       const result = await call('service:format', {
-        payload: { text: input, title: '', kind: 'text' },
-      });
+        payload: { text: input, title: '', kind: 'text', ...calibrationPayload() },
+      }, 120000);
       showResult(result);
       return;
     }
@@ -546,7 +615,10 @@ async function runExtract() {
     if (pageData.bvid) {
       setHint('正在解析 B 站视频（优先平台字幕）…');
       log(`B 站视频号：${pageData.bvid}`);
-      const job = await call('service:resolve', { url: `https://www.bilibili.com/video/${pageData.bvid}` });
+      const job = await call('service:resolve', {
+        url: `https://www.bilibili.com/video/${pageData.bvid}`,
+        ...resolveCalibration(),
+      });
       const result = await waitJob(job.job.id, 'B站解析');
       showResult(result);
       return;
@@ -570,6 +642,7 @@ async function runExtract() {
           url: pageData.url,
           page_url: pageData.url,
           cookie: pageData.cookie || '',
+          ...calibrationPayload(),
         },
       });
       const result = await waitJob(job.job.id, '图片文字识别');
@@ -594,8 +667,9 @@ async function runExtract() {
         url: pageData.url,
         kind: pageData.kind,
         platform: pageData.platform,
+        ...calibrationPayload(),
       },
-    });
+    }, 120000);
     showResult(result);
   } catch (err) {
     const message = err?.message || String(err);
@@ -668,7 +742,7 @@ async function transcribeMedia(pageData) {
       };
     }
 
-    const job = await call('service:transcribe', { payload });
+    const job = await call('service:transcribe', { payload: { ...payload, ...calibrationPayload() } });
     return await waitJob(job.job.id, '语音识别');
   } finally {
     // 后台标签页用完即关，避免留下看不见的窗口
@@ -877,6 +951,42 @@ els.autoStartService.addEventListener('change', async () => {
   log(els.autoStartService.checked ? '已开启：打开侧边栏时自动启动本地服务' : '已关闭：打开侧边栏时不自动启动服务');
 });
 
+// 打开设置页（手动填写智谱 API Key、选择 GLM 模型）
+function openSettings() {
+  try {
+    const opened = chrome.runtime.openOptionsPage();
+    if (opened && typeof opened.catch === 'function') {
+      opened.catch(() => chrome.tabs.create({ url: chrome.runtime.getURL('options.html') }));
+    }
+  } catch {
+    chrome.tabs.create({ url: chrome.runtime.getURL('options.html') });
+  }
+}
+els.settingsBtn.addEventListener('click', openSettings);
+
+// 设置页保存后，侧边栏无需重开即可生效
+function applySettingsChange(settings) {
+  appSettings = normalizeSettings(settings);
+  log(`设置已更新：模型 ${appSettings.model}，文案校准${appSettings.calibrate ? '开启' : '关闭'}`);
+}
+
+if (globalThis.chrome?.storage?.onChanged) {
+  chrome.storage.onChanged.addListener((changes, area) => {
+    if (area !== 'local' || !changes[SETTINGS_KEY]) return;
+    applySettingsChange(changes[SETTINGS_KEY].newValue);
+  });
+} else {
+  // 没有 storage 权限/尚未重载扩展时，靠同源 localStorage 的 storage 事件同步
+  window.addEventListener('storage', (event) => {
+    if (event.key !== SETTINGS_KEY) return;
+    try {
+      applySettingsChange(JSON.parse(event.newValue || 'null'));
+    } catch {
+      /* 忽略损坏的存储值 */
+    }
+  });
+}
+
 // 侧边栏关闭 → 断开连接（浏览器关闭同样会断开；这里只是让断开更及时）
 window.addEventListener('beforeunload', () => {
   clearInterval(reconnectTimer);
@@ -900,6 +1010,7 @@ els.urlInput.addEventListener('keydown', (event) => {
 (async () => {
   setHint('把视频 / 图文 / 网页链接粘贴到上方，点击「提取文案」。');
   log('侧边栏已打开，正在连接本地服务…');
+  await loadAppSettings();
   // 恢复偏好：默认不勾选（任务正常结束服务端已自动清理，这一项用于异常中断后补清）
   els.autoClear.checked = localStorage.getItem(AUTO_CLEAR_KEY) === '1';
   // 先把「自动启动」开关同步给后台，再建连：连不上时后台会顺手把服务拉起来

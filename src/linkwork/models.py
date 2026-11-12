@@ -34,6 +34,8 @@ class ExtractResult:
     platform: str = ""
     #: 提取到的正文/口播稿
     text: str = ""
+    #: 经 LLM 校准后的文案（仅修正错别字/标点/分段），为空表示未校准
+    calibrated_text: str = ""
     #: ASR 得到的分段（带时间戳），网页类为空
     segments: list[Segment] = field(default_factory=list)
     duration: float | None = None
@@ -52,9 +54,14 @@ class ExtractResult:
         return self.text
 
     @property
+    def display_text(self) -> str:
+        """最终展示文案：优先使用校准后的文本。"""
+        return self.calibrated_text or self.spoken_script
+
+    @property
     def char_count(self) -> int:
         """字数：中文按字计，同时忽略空白（英文句子也会得到非零计数）。"""
-        source = self.text or ""
+        source = self.calibrated_text or self.text or ""
         if not source and self.segments:
             source = "".join(seg.text for seg in self.segments)
         return len(re.sub(r"\s+", "", source))
@@ -75,6 +82,7 @@ class ExtractResult:
             "duration": round(self.duration, 1) if self.duration else None,
             "char_count": self.char_count,
             "text": self.text,
+            "calibrated_text": self.calibrated_text,
             "segments": [s.to_dict() for s in self.segments],
             "extra": self.extra,
             "artifacts": self.artifacts,

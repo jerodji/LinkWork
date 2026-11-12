@@ -124,7 +124,7 @@ def test_markdown_contains_metadata(tmp_path: Path):
 
 
 def test_extract_with_options_saves(monkeypatch, tmp_path: Path):
-    options = ExtractOptions(out_dir=tmp_path, formats=("txt",))
+    options = ExtractOptions(out_dir=tmp_path, formats=("txt",), calibrate=False)
     output = extract("  一些直接粘贴的文案内容  ", options)
     assert output.files["txt"].exists()
     assert output.result.text.strip() == "一些直接粘贴的文案内容"
@@ -835,6 +835,96 @@ def test_version_is_consistent_everywhere():
     import linkwork
 
     assert linkwork.__version__ == version, f"导入版本不一致：{linkwork.__version__} != {version}"
+
+
+# --------------------------------------------------------------------------- #
+# 文案校准：只修错别字/标点/分段，失败时保留原文
+# --------------------------------------------------------------------------- #
+def test_llm_split_chunks_keeps_all_characters():
+    from linkwork.llm import _split_chunks
+
+    text = "第一段内容。" * 200
+    chunks = _split_chunks(text, 100)
+    assert len(chunks) > 1
+    assert all(len(chunk) <= 100 for chunk in chunks)
+    assert "".join(chunks) == text
+
+
+def test_llm_skips_short_text_without_request():
+    from linkwork import llm
+
+    assert llm.calibrate_text("短") == "短"
+
+
+def test_llm_requires_user_api_key(monkeypatch):
+    """不再内置默认 Key：未配置时必须直接报错，而不是偷偷使用公共 Key。"""
+    from linkwork import llm
+
+    monkeypatch.delenv("LINKWORK_ZHIPU_API_KEY", raising=False)
+    monkeypatch.delenv("ZHIPU_API_KEY", raising=False)
+    with pytest.raises(llm.CalibrationError) as excinfo:
+        llm.calibrate_text("这是一段足够长的、需要校准的文案内容")
+    assert "API Key" in str(excinfo.value)
+
+
+def test_calibrate_result_applies_fix(monkeypatch, tmp_path: Path):
+    from linkwork import pipeline
+
+    result = ExtractResult(
+        url="",
+        kind="video",
+        method="asr",
+        segments=[Segment(0, 3, "大家号今天聊聊文案提取")],
+    )
+    options = ExtractOptions(
+        out_dir=tmp_path, calibrate=True, llm_api_key="test-key", llm_model="glm-4.7-flash"
+    )
+    captured = {}
+
+    def fake(text, **kwargs):
+        captured.update(kwargs)
+        return "大家好，今天聊聊文案提取。"
+
+    monkeypatch.setattr(pipeline, "calibrate_text", fake)
+
+    pipeline.calibrate_result(result, options)
+
+    assert captured == {"api_key": "test-key", "model": "glm-4.7-flash"}
+    assert result.calibrated_text == "大家好，今天聊聊文案提取。"
+    assert result.display_text == "大家好，今天聊聊文案提取。"
+    assert exporters.build_text(result).endswith("大家好，今天聊聊文案提取。")
+
+
+def test_calibrate_result_keeps_original_on_error(monkeypatch, tmp_path: Path):
+    from linkwork import pipeline
+    from linkwork.llm import CalibrationError
+
+    result = ExtractResult(url="", kind="article", method="html", text="这是一段需要校准的文案")
+    options = ExtractOptions(out_dir=tmp_path, calibrate=True)
+
+    def boom(text, **kwargs):
+        raise CalibrationError("模型繁忙")
+
+    monkeypatch.setattr(pipeline, "calibrate_text", boom)
+
+    pipeline.calibrate_result(result, options)
+
+    assert result.calibrated_text == ""
+    assert result.display_text == "这是一段需要校准的文案"
+    assert any("校准" in warning for warning in result.warnings)
+
+
+def test_calibrate_result_can_be_disabled(monkeypatch, tmp_path: Path):
+    from linkwork import pipeline
+
+    called = []
+    monkeypatch.setattr(pipeline, "calibrate_text", lambda text, **kwargs: called.append(text) or text)
+    result = ExtractResult(url="", kind="article", method="html", text="这是一段不需要校准的文案")
+
+    pipeline.calibrate_result(result, ExtractOptions(out_dir=tmp_path, calibrate=False))
+
+    assert called == []
+    assert result.calibrated_text == ""
 
 
 def test_extractor_build_marker_is_inside_function():

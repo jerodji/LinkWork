@@ -32,7 +32,7 @@ ASSET_IMAGE = Path(__file__).parent / "assets" / "xhs_sample.png"
 @pytest.fixture(scope="module")
 def service():
     """在随机端口启动服务，测试结束后关闭。"""
-    config = ServiceConfig(host="127.0.0.1", port=0, asr_model="tiny")
+    config = ServiceConfig(host="127.0.0.1", port=0, asr_model="tiny", calibrate=False)
     server = create_server(config)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
@@ -433,6 +433,59 @@ def test_faster_whisper_routes_through_isolation(tmp_path, monkeypatch):
     assert engine_name == "faster-whisper"
     assert len(segments) == 1 and segments[0].text == "隔离测试"
     assert out_wav == wav
+
+
+def test_service_accepts_llm_settings_from_payload():
+    """插件设置页填写的 Key / 模型 / 开关必须能透传到校准流程。"""
+    from linkwork.service import LinkWorkService
+
+    service = LinkWorkService(ServiceConfig(calibrate=False))
+
+    options = service._extract_options(
+        {"api_key": "  test-key  ", "model": " glm-4.7-flash ", "calibrate": True}
+    )
+    assert options.llm_api_key == "test-key"
+    assert options.llm_model == "glm-4.7-flash"
+    assert options.calibrate is True
+
+    # 未传时沿用服务配置
+    defaults = service._extract_options({})
+    assert defaults.llm_api_key is None
+    assert defaults.llm_model is None
+    assert defaults.calibrate is False
+
+
+def test_format_text_uses_calibration_settings(monkeypatch):
+    """粘贴文案 / 网页正文也要用设置页里的 Key 与模型校准。"""
+    from linkwork import service as service_module
+
+    captured = {}
+
+    def fake_calibrate(result, options, **kwargs):
+        captured.update(
+            api_key=options.llm_api_key,
+            model=options.llm_model,
+            calibrate=options.calibrate,
+        )
+        result.calibrated_text = f"{result.text}（已校准）"
+
+    monkeypatch.setattr(service_module, "calibrate_result", fake_calibrate)
+    svc = service_module.LinkWorkService(ServiceConfig(calibrate=True))
+
+    out = svc.format_text(
+        {
+            "text": "这是一段足够长的页面正文内容，用于验证校准配置是否透传。",
+            "api_key": "test-key",
+            "model": "glm-4.7-flash",
+        }
+    )
+
+    assert captured == {
+        "api_key": "test-key",
+        "model": "glm-4.7-flash",
+        "calibrate": True,
+    }
+    assert "（已校准）" in out["text"]
 
 
 # --------------------------------------------------------------------------- #

@@ -319,6 +319,32 @@ console.log('\n[6] 本地服务响应契约（同步接口需解开 result 外�
     JSON.stringify(doneJob?.data?.result).slice(0, 120),
   );
 
+  // 设置页填写的 Key / 模型 / 校准开关必须透传到 /api/resolve
+  const captured = [];
+  const envSettings = makeWorkerEnv();
+  envSettings.context.fetch = async (url, init) => {
+    captured.push({ url, body: init?.body ? JSON.parse(init.body) : null });
+    return {
+      ok: true,
+      status: 200,
+      text: async () => JSON.stringify({ ok: true, job: { id: 'job-settings', state: 'pending' } }),
+    };
+  };
+  vm.runInContext(src, envSettings.context);
+  const sendSettings = (msg) =>
+    new Promise((resolve) => envSettings.listeners.message[0](msg, {}, resolve));
+  await sendSettings({
+    type: 'service:resolve',
+    url: 'https://example.com/v/1',
+    apiKey: 'test-key',
+    model: 'glm-4.7-flash',
+    calibrate: false,
+  });
+  const sentBody = captured[0]?.body || {};
+  check('resolve 透传 api_key', sentBody.api_key === 'test-key', JSON.stringify(sentBody));
+  check('resolve 透传 model', sentBody.model === 'glm-4.7-flash', JSON.stringify(sentBody));
+  check('resolve 透传 calibrate', sentBody.calibrate === false, JSON.stringify(sentBody));
+
   await testSidepanelCallHasTimeout();
   await testPanelAutoConnectLifecycle();
   await testServiceAutoStart();
