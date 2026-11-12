@@ -337,12 +337,12 @@ console.log('\n[6] 本地服务响应契约（同步接口需解开 result 外�
     type: 'service:resolve',
     url: 'https://example.com/v/1',
     apiKey: 'test-key',
-    model: 'glm-4.7-flash',
+    model: 'glm-4.5-flash',
     calibrate: false,
   });
   const sentBody = captured[0]?.body || {};
   check('resolve 透传 api_key', sentBody.api_key === 'test-key', JSON.stringify(sentBody));
-  check('resolve 透传 model', sentBody.model === 'glm-4.7-flash', JSON.stringify(sentBody));
+  check('resolve 透传 model', sentBody.model === 'glm-4.5-flash', JSON.stringify(sentBody));
   check('resolve 透传 calibrate', sentBody.calibrate === false, JSON.stringify(sentBody));
 
   await testSidepanelCallHasTimeout();

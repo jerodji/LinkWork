@@ -1,7 +1,7 @@
 /** LinkWork 设置页：保存智谱 API Key 与 GLM 模型配置。 */
 
 const SETTINGS_KEY = 'linkwork.settings';
-const DEFAULT_SETTINGS = { apiKey: '', model: 'glm-4.7-flash', calibrate: true };
+const DEFAULT_SETTINGS = { apiKey: '', model: 'glm-4.5-flash', calibrate: true };
 const API_URL = 'https://open.bigmodel.cn/api/paas/v4/chat/completions';
 
 const els = {
@@ -114,7 +114,7 @@ async function testConnection() {
     return;
   }
   els.testBtn.disabled = true;
-  setStatus('正在连接 GLM-4.7-Flash…');
+  setStatus('正在连接 GLM-4.5-Flash…');
   try {
     const response = await fetch(API_URL, {
       method: 'POST',

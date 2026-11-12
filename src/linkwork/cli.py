@@ -48,7 +48,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--no-calibrate",
         action="store_true",
-        help="关闭文案校准（默认用 GLM-4.7-Flash 只修正错别字/标点/分段）",
+        help="关闭文案校准（默认用 GLM-4.5-Flash 只修正错别字/标点/分段）",
     )
     parser.add_argument("--keep-temp", action="store_true", help="保留临时音频文件（调试用）")
     parser.add_argument("--stdin", action="store_true", help="从标准输入逐行读取链接")

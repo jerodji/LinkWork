@@ -1,4 +1,4 @@
-"""文案校准：调用智谱 GLM-4.7-Flash 修正错别字、标点与分段。
+"""文案校准：调用智谱 GLM-4.5-Flash 修正错别字、标点与分段。
 
 只做最小改动，不改写、不润色、不增删内容。模型不可用时由调用方降级为原文。
 """
@@ -13,7 +13,7 @@ import time
 log = logging.getLogger(__name__)
 
 DEFAULT_API_URL = "https://open.bigmodel.cn/api/paas/v4/chat/completions"
-DEFAULT_MODEL = "glm-4.7-flash"
+DEFAULT_MODEL = "glm-4.5-flash"
 
 #: 单次请求的文本上限（字符），超长文本按段落/句子切分
 MAX_CHUNK_CHARS = 4000
@@ -53,7 +53,7 @@ def calibrate_text(
     Args:
         text: 待校准的完整文案。
         api_key: 智谱 API Key，默认读取环境变量 LINKWORK_ZHIPU_API_KEY / ZHIPU_API_KEY。
-        model: 模型名，默认 glm-4.7-flash。
+        model: 模型名，默认 glm-4.5-flash。
         timeout: 单次请求超时秒数。
 
     Raises:

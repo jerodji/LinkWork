@@ -442,10 +442,10 @@ def test_service_accepts_llm_settings_from_payload():
     service = LinkWorkService(ServiceConfig(calibrate=False))
 
     options = service._extract_options(
-        {"api_key": "  test-key  ", "model": " glm-4.7-flash ", "calibrate": True}
+        {"api_key": "  test-key  ", "model": " glm-4.5-flash ", "calibrate": True}
     )
     assert options.llm_api_key == "test-key"
-    assert options.llm_model == "glm-4.7-flash"
+    assert options.llm_model == "glm-4.5-flash"
     assert options.calibrate is True
 
     # 未传时沿用服务配置
@@ -476,13 +476,13 @@ def test_format_text_uses_calibration_settings(monkeypatch):
         {
             "text": "这是一段足够长的页面正文内容，用于验证校准配置是否透传。",
             "api_key": "test-key",
-            "model": "glm-4.7-flash",
+            "model": "glm-4.5-flash",
         }
     )
 
     assert captured == {
         "api_key": "test-key",
-        "model": "glm-4.7-flash",
+        "model": "glm-4.5-flash",
         "calibrate": True,
     }
     assert "（已校准）" in out["text"]

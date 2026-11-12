@@ -45,7 +45,7 @@ const els = {
 
 // ------------------------------------------------------------------ 设置
 const SETTINGS_KEY = 'linkwork.settings';
-const DEFAULT_SETTINGS = { apiKey: '', model: 'glm-4.7-flash', calibrate: true };
+const DEFAULT_SETTINGS = { apiKey: '', model: 'glm-4.5-flash', calibrate: true };
 let appSettings = { ...DEFAULT_SETTINGS };
 
 function normalizeSettings(raw) {

@@ -877,7 +877,7 @@ def test_calibrate_result_applies_fix(monkeypatch, tmp_path: Path):
         segments=[Segment(0, 3, "大家号今天聊聊文案提取")],
     )
     options = ExtractOptions(
-        out_dir=tmp_path, calibrate=True, llm_api_key="test-key", llm_model="glm-4.7-flash"
+        out_dir=tmp_path, calibrate=True, llm_api_key="test-key", llm_model="glm-4.5-flash"
     )
     captured = {}
 
@@ -889,7 +889,7 @@ def test_calibrate_result_applies_fix(monkeypatch, tmp_path: Path):
 
     pipeline.calibrate_result(result, options)
 
-    assert captured == {"api_key": "test-key", "model": "glm-4.7-flash"}
+    assert captured == {"api_key": "test-key", "model": "glm-4.5-flash"}
     assert result.calibrated_text == "大家好，今天聊聊文案提取。"
     assert result.display_text == "大家好，今天聊聊文案提取。"
     assert exporters.build_text(result).endswith("大家好，今天聊聊文案提取。")

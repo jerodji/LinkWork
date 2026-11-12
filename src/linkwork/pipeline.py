@@ -42,11 +42,11 @@ class ExtractOptions:
     subtitles_only: bool = False
     #: 保留临时音频文件（默认任务结束后删除）
     keep_temp: bool = False
-    #: 用 GLM-4.7-Flash 校准文案（仅修正错别字/标点/分段）
+    #: 用 GLM-4.5-Flash 校准文案（仅修正错别字/标点/分段）
     calibrate: bool = True
     #: 校准用的智谱 API Key（为空时读取环境变量）
     llm_api_key: str | None = None
-    #: 校准用的模型名（默认 glm-4.7-flash）
+    #: 校准用的模型名（默认 glm-4.5-flash）
     llm_model: str | None = None
     #: 自定义工作目录（默认系统临时目录）
     workdir: Path | None = None
@@ -181,7 +181,7 @@ def calibrate_result(
     *,
     progress: ProgressCb | None = None,
 ) -> None:
-    """用 GLM-4.7-Flash 校准文案（只修正错别字、标点与分段）。
+    """用 GLM-4.5-Flash 校准文案（只修正错别字、标点与分段）。
 
     校准失败不会影响提取结果，只会在 ``result.warnings`` 中留下提示。
     """
