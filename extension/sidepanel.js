@@ -32,10 +32,6 @@ const els = {
   toast: $('toast'),
   copyLogBtn: $('copyLogBtn'),
   clearLogBtn: $('clearLogBtn'),
-  cacheSize: $('cacheSize'),
-  clearCacheBtn: $('clearCacheBtn'),
-  openCacheBtn: $('openCacheBtn'),
-  autoClear: $('autoClear'),
   autoStartService: $('autoStartService'),
   startServiceBtn: $('startServiceBtn'),
   installHostBtn: $('installHostBtn'),
@@ -80,17 +76,28 @@ async function readAppSettingsRaw() {
   if (storage) {
     try {
       const data = await storage.get(SETTINGS_KEY);
-      return data?.[SETTINGS_KEY] ?? null;
+      const stored = data?.[SETTINGS_KEY];
+      if (stored) return stored;
     } catch {
       /* chrome.storage 不可用时退回 localStorage */
     }
   }
+  let local = null;
   try {
     const raw = localStorage.getItem(SETTINGS_KEY);
-    return raw ? JSON.parse(raw) : null;
+    local = raw ? JSON.parse(raw) : null;
   } catch {
-    return null;
+    local = null;
   }
+  // 旧版本/权限未生效时可能只写进了 localStorage：迁移到 chrome.storage，避免重载后丢失
+  if (local && storage) {
+    try {
+      await storage.set({ [SETTINGS_KEY]: local });
+    } catch {
+      /* 迁移失败不影响本次读取 */
+    }
+  }
+  return local;
 }
 
 /** 发给 /api/resolve（由后台转成 api_key/model） */
@@ -418,7 +425,6 @@ async function startServiceManually() {
       els.startHint.className = 'hint ok';
       log(`服务已经在运行（v${health.version || '?'}，ASR：${asr ? asr.name : '无'}），无需重复启动`);
       toast('服务已经在运行');
-      await refreshCache();
       return;
     }
 
@@ -441,7 +447,6 @@ async function startServiceManually() {
       log(`⚠️ ${result.cacheNote}`);
       toast('已换用可写的缓存目录，详见日志', true);
     }
-    await refreshCache();
   } catch (err) {
     const message = err.message || String(err);
     log(`❌ 启动服务失败：${message}`);
@@ -824,18 +829,8 @@ function logSources(pageData) {
 }
 
 // ------------------------------------------------------------------ 媒体缓存
+//: 缓存相关设置已移到设置页；这里只读取开关并在提取后执行清理
 const AUTO_CLEAR_KEY = 'linkwork.autoClearMedia';
-
-async function refreshCache() {
-  try {
-    const data = await call('service:cache');
-    const cache = data?.cache || {};
-    els.cacheSize.textContent = `${cache.human || '0 B'}${cache.workspaces ? ` · ${cache.workspaces} 个目录` : ''}`;
-    els.cacheSize.title = cache.root ? `目录：${cache.root}` : '';
-  } catch {
-    els.cacheSize.textContent = '—';
-  }
-}
 
 async function clearCache(quiet = false) {
   try {
@@ -843,31 +838,15 @@ async function clearCache(quiet = false) {
     const cleared = data?.cleared || {};
     log(`已清除媒体缓存：${cleared.removed || 0} 个目录，释放 ${cleared.freed_human || '0 B'}`);
     if (!quiet) toast(`已清除，释放 ${cleared.freed_human || '0 B'}`);
-    await refreshCache();
   } catch (err) {
     if (!quiet) toast(`清除失败：${err.message}`, true);
     log(`清除缓存失败：${err.message}`);
   }
 }
 
-/** 在访达里打开缓存目录（扩展无权执行命令，转交本机启动器） */
-async function openCacheLocation() {
-  els.openCacheBtn.disabled = true;
-  try {
-    const result = await call('service:cacheReveal', {}, 25000);
-    log(`已在访达中打开缓存位置：${result?.path || '(未知路径)'}`);
-    toast('已在访达中打开缓存位置');
-  } catch (err) {
-    log(`打开缓存位置失败：${err.message}`);
-    toast(err.message, true);
-  } finally {
-    els.openCacheBtn.disabled = false;
-  }
-}
-
-/** 提取成功后按需自动清理本次下载的媒体（默认关闭） */
+/** 提取成功后按需自动清理本次下载的媒体（默认关闭，开关在设置页） */
 async function autoClearIfNeeded() {
-  if (!els.autoClear.checked) return;
+  if (localStorage.getItem(AUTO_CLEAR_KEY) !== '1') return;
   await clearCache(true);
 }
 
@@ -912,17 +891,6 @@ els.clearLogBtn.addEventListener('click', () => {
   els.logBox.textContent = '';
   logCount = 0;
   els.logCount.textContent = '0';
-});
-
-els.clearCacheBtn.addEventListener('click', () => {
-  clearCache().catch((e) => toast(e.message, true));
-});
-els.openCacheBtn.addEventListener('click', () => {
-  openCacheLocation().catch((e) => toast(e.message, true));
-});
-els.autoClear.addEventListener('change', () => {
-  localStorage.setItem(AUTO_CLEAR_KEY, els.autoClear.checked ? '1' : '0');
-  log(els.autoClear.checked ? '已开启：每次提取后自动清理媒体' : '已关闭自动清理');
 });
 
 els.clearResultBtn.addEventListener('click', () => {
@@ -1011,12 +979,9 @@ els.urlInput.addEventListener('keydown', (event) => {
   setHint('把视频 / 图文 / 网页链接粘贴到上方，点击「提取文案」。');
   log('侧边栏已打开，正在连接本地服务…');
   await loadAppSettings();
-  // 恢复偏好：默认不勾选（任务正常结束服务端已自动清理，这一项用于异常中断后补清）
-  els.autoClear.checked = localStorage.getItem(AUTO_CLEAR_KEY) === '1';
   // 先把「自动启动」开关同步给后台，再建连：连不上时后台会顺手把服务拉起来
   await syncAutoStartPref();
   // 连接本身由后台负责探活；连上后会自动把状态推到界面
   connectPanel();
-  await refreshCache();
   els.urlInput.focus();
 })();

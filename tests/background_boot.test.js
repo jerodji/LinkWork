@@ -345,6 +345,20 @@ console.log('\n[6] 本地服务响应契约（同步接口需解开 result 外�
   check('resolve 透传 model', sentBody.model === 'glm-4.5-flash', JSON.stringify(sentBody));
   check('resolve 透传 calibrate', sentBody.calibrate === false, JSON.stringify(sentBody));
 
+  // 设置页模型栏：免费模型下拉，默认 4.5
+  const optionsHtml = fs.readFileSync(path.join(ROOT, 'extension', 'options.html'), 'utf8');
+  const optionsJs = fs.readFileSync(path.join(ROOT, 'extension', 'options.js'), 'utf8');
+  check('设置页模型栏名为「免费模型」', /<span class="field-label">免费模型<\/span>/.test(optionsHtml));
+  check(
+    '免费模型下拉包含 4.5 与 4.7',
+    /value="glm-4\.5-flash"/.test(optionsHtml) && /value="glm-4\.7-flash"/.test(optionsHtml),
+  );
+  check(
+    'API Key 输入框不用 password 类型（避免浏览器密码管理器覆盖）',
+    !/id="apiKey"[^>]*type="password"/.test(optionsHtml) && /id="apiKey"[^>]*class="masked"/.test(optionsHtml),
+  );
+  check('API Key 遮罩由 class 控制', /classList\.toggle\('masked'\)/.test(optionsJs));
+
   await testSidepanelCallHasTimeout();
   await testPanelAutoConnectLifecycle();
   await testServiceAutoStart();
@@ -439,7 +453,7 @@ async function testPanelAutoConnectLifecycle() {
   );
   check('侧边栏监听后台推送的状态', /onMessage\.addListener/.test(sidepanel));
   check('侧边栏监听断开事件', /onDisconnect\.addListener/.test(sidepanel));
-  check('初始化流程里调用了 connectPanel()', /connectPanel\(\);\s*\n\s*await refreshCache/.test(sidepanel));
+  check('初始化流程里调用了 connectPanel()', /connectPanel\(\);/.test(sidepanel));
   check('断开后有自动重连', /scheduleReconnect/.test(sidepanel) && /setInterval/.test(sidepanel));
   check(
     '关闭侧边栏/浏览器时主动断开连接',
@@ -521,19 +535,20 @@ function testPanelLayout() {
 // 媒体缓存：打开缓存位置 + 自动清理默认关
 // --------------------------------------------------------------------------- //
 function testCacheControls() {
-  console.log('\n[11] 媒体缓存控件');
+  console.log('\n[11] 媒体缓存设置（已移到设置页）');
 
-  const html = fs.readFileSync(path.join(ROOT, 'extension', 'sidepanel.html'), 'utf8');
+  const html = fs.readFileSync(path.join(ROOT, 'extension', 'options.html'), 'utf8');
+  const options = fs.readFileSync(path.join(ROOT, 'extension', 'options.js'), 'utf8');
+  const sidepanelHtml = fs.readFileSync(path.join(ROOT, 'extension', 'sidepanel.html'), 'utf8');
   const sidepanel = fs.readFileSync(path.join(ROOT, 'extension', 'sidepanel.js'), 'utf8');
   const background = fs.readFileSync(BACKGROUND, 'utf8');
 
-  check('缓存区有「打开缓存位置」按钮', /id="openCacheBtn"/.test(html), 'sidepanel.html 缺少 #openCacheBtn');
-  check(
-    '按钮文案与缓存语义一致',
-    /打开缓存位置/.test(html) && /在访达里打开缓存目录/.test(html),
-  );
-  check('按钮已绑定点击处理', /openCacheBtn\.addEventListener\('click'/.test(sidepanel));
-  check('点击后走后台转交本机启动器', /call\('service:cacheReveal'/.test(sidepanel));
+  check('设置页有缓存区', /id="cacheSize"/.test(html), 'options.html 缺少 #cacheSize');
+  check('设置页有「清除缓存」按钮', /id="clearCacheBtn"/.test(html), 'options.html 缺少 #clearCacheBtn');
+  check('设置页有「打开缓存位置」按钮', /id="openCacheBtn"/.test(html), 'options.html 缺少 #openCacheBtn');
+  check('清除缓存按钮已绑定', /clearCacheBtn\.addEventListener\('click'/.test(options));
+  check('打开缓存位置按钮已绑定', /openCacheBtn\.addEventListener\('click'/.test(options));
+  check('点击后走后台转交本机启动器', /callBackground\('service:cacheReveal'/.test(options));
   check('后台有对应的消息分支', /case 'service:cacheReveal'/.test(background));
   check(
     '后台通过 native host 的 reveal 动作实现（扩展不能自己执行系统命令）',
@@ -544,14 +559,18 @@ function testCacheControls() {
   // 自动清理默认不勾选
   check(
     '「提取后自动清理」默认不勾选',
-    /els\.autoClear\.checked = localStorage\.getItem\(AUTO_CLEAR_KEY\) === '1'/.test(sidepanel),
+    /els\.autoClear\.checked = localStorage\.getItem\(AUTO_CLEAR_KEY\) === '1'/.test(options),
     '默认值仍是勾选',
   );
   check(
     '勾选框在 HTML 里没有默认 checked',
     !/id="autoClear"[^>]*checked/.test(html),
   );
-  check('用户勾选后仍会被记住', /setItem\(AUTO_CLEAR_KEY/.test(sidepanel));
+  check('用户勾选后仍会被记住', /setItem\(AUTO_CLEAR_KEY/.test(options));
+
+  // 侧边栏只保留提取后自动清理的执行逻辑
+  check('侧边栏已移除缓存控件', !/id="openCacheBtn"/.test(sidepanelHtml) && !/id="autoClear"/.test(sidepanelHtml));
+  check('侧边栏仍读取自动清理开关', /AUTO_CLEAR_KEY/.test(sidepanel));
 }
 
 // --------------------------------------------------------------------------- //
@@ -605,7 +624,7 @@ async function testStartServiceWhenAlreadyRunning() {
   check('已在运行时提示「服务已经在运行」', /服务已经在运行/.test(sidepanel));
   check(
     '已在运行时早返回，不再调 service:start',
-    /toast\('服务已经在运行'\);\s*\n\s*await refreshCache\(\);\s*\n\s*return;/.test(sidepanel),
+    /toast\('服务已经在运行'\);\s*\n\s*return;/.test(sidepanel),
     '未在已在运行的分支提前返回',
   );
   check(

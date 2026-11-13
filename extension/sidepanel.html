@@ -78,23 +78,8 @@
       </div>
     </section>
 
-    <section class="block cache-block">
-      <div class="cache-row">
-        <span class="label" style="margin:0">媒体缓存</span>
-        <span id="cacheSize" class="cache-size">—</span>
-      </div>
-      <div class="row" style="margin-top:6px">
-        <button id="clearCacheBtn" class="btn">清除缓存</button>
-        <button id="openCacheBtn" class="btn ghost" title="在访达里打开缓存目录（下载的临时媒体与识别中间产物）">打开缓存位置</button>
-        <label class="check-inline" title="每次提取成功后自动清理该次下载的媒体；不勾选也会在任务结束时自动清理，这一项用于异常中断后补清">
-          <input type="checkbox" id="autoClear" />
-          <span>提取后自动清理</span>
-        </label>
-      </div>
-    </section>
-
     <section class="block">
-      <details id="logDetails">
+      <details id="logDetails" open>
         <summary>运行日志 <span id="logCount" class="badge">0</span></summary>
         <div class="log-actions">
           <button id="copyLogBtn" class="btn small">复制日志</button>

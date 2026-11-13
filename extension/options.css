@@ -83,7 +83,8 @@ body {
   color: var(--text-dim);
 }
 
-.field input {
+.field input,
+.field select {
   width: 100%;
   border: 1px solid var(--border);
   border-radius: 8px;
@@ -95,7 +96,11 @@ body {
   outline: none;
   transition: border-color 0.15s, background 0.15s;
 }
-.field input:focus { border-color: var(--primary); background: #fff; }
+.field input:focus,
+.field select:focus { border-color: var(--primary); background: #fff; }
+.field select { height: 41px; cursor: pointer; }
+/* 手动遮罩，避免 type=password 被浏览器密码管理器自动填充覆盖 */
+.field input.masked { -webkit-text-security: disc; }
 
 .field-hint {
   display: block;
@@ -107,6 +112,8 @@ body {
 
 .key-row { display: flex; gap: 8px; }
 .key-row input { flex: 1 1 auto; min-width: 0; }
+/* 「显示 / 隐藏」按钮不参与压缩，避免文字被挤成竖排 */
+.key-row .btn { flex: 0 0 auto; white-space: nowrap; }
 
 .check {
   display: inline-flex;
@@ -166,3 +173,21 @@ body {
   font-size: 12.5px;
 }
 .notes li { margin: 4px 0; }
+
+.cache-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: #fbfbfc;
+}
+.cache-label { font-size: 12.5px; color: var(--text-dim); }
+.cache-size {
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+  color: var(--text);
+}
+.cache-check { margin-top: 14px; }

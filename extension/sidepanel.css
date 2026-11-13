@@ -283,9 +283,6 @@ details summary {
 .toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
 .toast.err { background: var(--err); }
 
-.cache-block { padding: 8px 10px; }
-.cache-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
-.cache-size { font-size: 12px; color: var(--text-dim); font-variant-numeric: tabular-nums; }
 .check-inline {
   display: inline-flex;
   align-items: center;
